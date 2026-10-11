@@ -16,8 +16,8 @@ counts Clojurific's releases, starting from 1.
 
 ## Usage
 
-`npm create clojurific@latest` scaffolds a project (Vanilla, Reagent or UIx)
-like the one below, installs it and starts the dev server.
+`npm create clojurific@latest` scaffolds a project (Vanilla, Reagent, UIx, or
+a Hono backend) like the one below, installs it and starts the dev server.
 
 Dependencies and source paths come from the project's `deps.edn`:
 

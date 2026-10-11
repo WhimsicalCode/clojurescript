@@ -129,9 +129,14 @@ export function text({ message, placeholder = '', defaultValue = '' }) {
   });
 }
 
-/** One of options ({value, label, color}), initialValue first. */
+/** One of options ({value, label, color, hint}), initialValue first. */
 export function select({ message, options, initialValue }) {
   const paint = option => (option.color ? option.color(option.label) : option.label);
+  // hints (i.e. links) aligned after the longest label
+  const width = Math.max(...options.map(o => o.label.length));
+  const line = option => (option.hint
+    ? `${paint(option)}${' '.repeat(width - option.label.length + 2)}${c.dim(option.hint)}`
+    : paint(option));
   return prompt({
     state: { index: Math.max(0, options.findIndex(o => o.value === initialValue)) },
     value: s => options[s.index].value,
@@ -142,8 +147,8 @@ export function select({ message, options, initialValue }) {
     },
     render(s, status) {
       const lines = options.map((option, i) => (i === s.index
-        ? `${c.green(S.radioOn)} ${paint(option)}`
-        : `${c.dim(S.radioOff)} ${c.dim(paint(option))}`));
+        ? `${c.green(S.radioOn)} ${line(option)}`
+        : `${c.dim(S.radioOff)} ${c.dim(line(option))}`));
       lines.push(`${c.dim('↑/↓')} to navigate ${c.dim('•')} ${c.dim('Enter:')} confirm`);
       return title(message, status) + body(status, lines, paint(options[s.index]));
     },

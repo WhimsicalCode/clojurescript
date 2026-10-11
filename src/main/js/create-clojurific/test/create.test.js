@@ -61,16 +61,27 @@ for (const template of TEMPLATES) {
     assert.equal(pkg.name, 'my-app');
     assert.equal(pkg.type, 'module');
     assert.equal(pkg.devDependencies.clojurific, `^${version}`);
-    assert.deepEqual(pkg.scripts, { dev: 'vite', build: 'vite build', preview: 'vite preview', repl: 'cljf repl' });
     assert.match(readFileSync(path.join(root, 'deps.edn'), 'utf8'), /nrepl\/nrepl/);
-    assert.match(readFileSync(path.join(root, 'vite.config.mjs'), 'utf8'), /repl: \{ 'nrepl-port': 0 \}/);
+    const viteConfig = readFileSync(path.join(root, 'vite.config.mjs'), 'utf8');
+    assert.match(viteConfig, /repl: \{ 'nrepl-port': 0 \}/);
     assert.ok(existsSync(path.join(root, '.gitignore')));
     assert.ok(!existsSync(path.join(root, '_gitignore')));
     const source = readFileSync(path.join(root, 'src', 'my_app', 'core.cljs'), 'utf8');
     assert.match(source, /^\(ns my-app\.core\b/);
     assert.match(source, /src\/my_app\/core\.cljs/);
-    assert.match(readFileSync(path.join(root, 'index.html'), 'utf8'), /<script type="module" src="\/src\/my_app\/core\.cljs">/);
-    assert.match(readFileSync(path.join(root, 'index.html'), 'utf8'), /<title>my-app<\/title>/);
+    if (template === 'hono') {
+      assert.deepEqual(pkg.scripts, { dev: 'vite', build: 'vite build', start: 'node dist/index.js', repl: 'cljf repl' });
+      assert.ok(pkg.dependencies.hono);
+      // the app is a :js-entries export the dev server runs, no pages
+      assert.match(viteConfig, /default: "'my-app\.core\/app"/);
+      assert.match(viteConfig, /ssrEntries: \['server'\]/);
+      assert.match(source, /\(def app\b/);
+      assert.ok(!existsSync(path.join(root, 'index.html')));
+    } else {
+      assert.deepEqual(pkg.scripts, { dev: 'vite', build: 'vite build', preview: 'vite preview', repl: 'cljf repl' });
+      assert.match(readFileSync(path.join(root, 'index.html'), 'utf8'), /<script type="module" src="\/src\/my_app\/core\.cljs">/);
+      assert.match(readFileSync(path.join(root, 'index.html'), 'utf8'), /<title>my-app<\/title>/);
+    }
   });
 }
 

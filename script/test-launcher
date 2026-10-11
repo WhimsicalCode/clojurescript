@@ -60,7 +60,7 @@ printf '(ns smoke.core)\n(println "smoke" (+ 1 2))\n' > "$project/src/smoke/core
 repo=$(pwd)
 mkdir -p "$project/clj-config"
 printf '{:mvn/local-repo "%s"}\n' "$project/m2" > "$project/clj-config/deps.edn"
-for template in vanilla reagent uix; do
+for template in vanilla reagent uix hono; do
   (
     cd "$project"
     npm exec --yes --package="$repo/builds/create-clojurific-$version.tgz" -- \
@@ -74,7 +74,12 @@ for template in vanilla reagent uix; do
       echo "$output"
       exit 1
     fi
-    grep -q "create-$template.core" dist/manifest.json
+    if [ "$template" = hono ]; then
+      # a Node.js server, its app bundled in
+      grep -q 'Hello Hono!' dist/index.js
+    else
+      grep -q "create-$template.core" dist/manifest.json
+    fi
     echo "create-clojurific $template: ok"
   )
 done

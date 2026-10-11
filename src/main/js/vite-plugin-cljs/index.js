@@ -247,6 +247,10 @@ export default module.exports;
  *   true
  * @param {string[]} [options.entries] the :js-entries this build bundles,
  *   defaults to all; each is self-contained when it's the only one
+ * @param {string[]} [options.ssrEntries] :js-entries the dev server runs in
+ *   its ssr environment once they're compiled, i.e. a server's (which a
+ *   plugin like @hono/vite-dev-server imports from the same runner): the REPL
+ *   evaluates in them before their first request
  * @param {boolean} [options.replRemoteConsole] accept cljs_eval (forms the
  *   compiler compiles, running its macros) from pages on other hosts too,
  *   defaults to false: only from this machine. A proxy in front of the dev
@@ -686,19 +690,71 @@ export default function cljs(options) {
         server.ws.send(problem);
       };
       server.ws.on('connection', socket => problem && socket.send(JSON.stringify(problem)));
+      // options.ssrEntries run in the ssr environment's runner once compiled,
+      // until they ran
+      let ssrEntries = options.ssrEntries ?? [];
+      const runSsrEntries = async () => {
+        if (!ssrEntries.length) return;
+        // created when it's first read
+        const runner = server.environments.ssr?.runner;
+        if (!runner) return;
+        const info = await buildInfo();
+        for (const name of ssrEntries) {
+          const file = info?.entries?.[name];
+          if (!file) {
+            config.logger.error(`[cljs] ssrEntries: no :js-entries ${name}`, { timestamp: true });
+            continue;
+          }
+          try {
+            await runner.import(path.join(outputDir, file));
+            ssrEntries = ssrEntries.filter(n => n !== name);
+          } catch (e) {
+            config.logger.error(`[cljs] running ${name} (${file}): ${e.stack ?? e}`, { timestamp: true });
+          }
+        }
+      };
       // The REPL (cljf.esm.repl): pages running the build (cljf.esm.repl-runtime)
-      // say hello over Vite's websocket, each connection gets a runtime id. Their
-      // cljs:repl messages go to the compiler as `repl <json>` lines, the
-      // compiler's repl-send events to the page of their runtime id.
+      // say hello over Vite's websocket, and modules the ssr environment's
+      // runner runs (a server's :js-entries) over its hot channel; each
+      // connection gets a runtime id. Their cljs:repl messages go to the
+      // compiler as `repl <json>` lines, the compiler's repl-send events to the
+      // runtime of their runtime id, runtimes[id](data).
       const runtimes = new Map();
       let lastRuntimeId = 0;
       const toRepl = msg => proc.stdin.writable && proc.stdin.write(`repl ${JSON.stringify(msg)}\n`);
-      const send = (socket, data) => socket.send(JSON.stringify({ type: 'custom', event: 'cljs:repl', data }));
+      // A runtime's connection: receive takes the data of its cljs:repl events
+      // for the REPL, close says bye. send replies to it, consoleAllowed whether
+      // it may cljs_eval.
+      const connectRuntime = (send, consoleAllowed) => {
+        let id;
+        const receive = data => {
+          if (data.op === 'hello' && id === undefined) {
+            id = ++lastRuntimeId;
+            runtimes.set(id, send);
+          }
+          if (id === undefined) return;
+          if (data.op === 'hello') send({ op: 'welcome', runtime: id });
+          if (data.op === 'console-eval' && !consoleAllowed) {
+            send({
+              op: 'console-result',
+              rid: data.rid,
+              result: { error: 'cljs_eval only runs in pages on the dev server\'s machine, see the cljs plugin\'s replRemoteConsole' },
+            });
+            return;
+          }
+          toRepl({ ...data, runtime: id });
+        };
+        const close = () => {
+          if (id !== undefined && runtimes.delete(id)) toRepl({ op: 'bye', runtime: id });
+        };
+        return { receive, close };
+      };
       server.ws.on('connection', (socket, req) => {
         // cljs_eval compiles forms in the compiler's JVM, which runs their macros:
         // only for pages on this machine, unless replRemoteConsole
-        const consoleAllowed = options.replRemoteConsole || isLocalConnection(req);
-        let id;
+        const runtime = connectRuntime(
+          data => socket.send(JSON.stringify({ type: 'custom', event: 'cljs:repl', data })),
+          options.replRemoteConsole || isLocalConnection(req));
         socket.on('message', raw => {
           let msg;
           try {
@@ -707,31 +763,29 @@ export default function cljs(options) {
             return;
           }
           if (msg?.type !== 'custom' || msg.event !== 'cljs:repl' || !msg.data) return;
-          const data = msg.data;
-          if (data.op === 'hello' && id === undefined) {
-            id = ++lastRuntimeId;
-            runtimes.set(id, socket);
-          }
-          if (id === undefined) return;
-          if (data.op === 'hello') send(socket, { op: 'welcome', runtime: id });
-          if (data.op === 'console-eval' && !consoleAllowed) {
-            send(socket, {
-              op: 'console-result',
-              rid: data.rid,
-              result: { error: 'cljs_eval only runs in pages on the dev server\'s machine, see the cljs plugin\'s replRemoteConsole' },
-            });
-            return;
-          }
-          toRepl({ ...data, runtime: id });
+          runtime.receive(msg.data);
         });
-        socket.on('close', () => {
-          if (id !== undefined && runtimes.delete(id)) toRepl({ op: 'bye', runtime: id });
-        });
+        socket.on('close', runtime.close);
       });
+      // the ssr runner's modules run in this process, each runner is a client
+      // of the environment's hot channel
+      const ssrHot = server.environments.ssr?.hot;
+      if (ssrHot) {
+        const ssrRuntimes = new Map();
+        const ssrRuntime = client => {
+          if (!ssrRuntimes.has(client)) ssrRuntimes.set(client, connectRuntime(data => client.send('cljs:repl', data), true));
+          return ssrRuntimes.get(client);
+        };
+        ssrHot.on('cljs:repl', (data, client) => data && ssrRuntime(client).receive(data));
+        ssrHot.on('vite:client:disconnect', (data, client) => {
+          ssrRuntimes.get(client)?.close();
+          ssrRuntimes.delete(client);
+        });
+      }
       proc = run(compilerArgs('watch', { ':esm-hmr': true, ':exit-with-parent': true, ':watch-events': ':stdin' }), async event => {
         if (event.type === 'repl-send') {
-          const socket = runtimes.get(event.runtime);
-          if (socket) send(socket, event.msg);
+          const send = runtimes.get(event.runtime);
+          if (send) send(event.msg);
           else toRepl({ op: 'bye', runtime: event.runtime });
           return;
         }
@@ -793,6 +847,7 @@ export default function cljs(options) {
           for (const file of released) {
             for (const mod of client.moduleGraph.getModulesByFile(file) ?? []) client.reloadModule(mod);
           }
+          runSsrEntries();
           ready();
         } else if (event.type === 'error') {
           config.logger.error(`[cljs] ${event.message}`, { timestamp: true });

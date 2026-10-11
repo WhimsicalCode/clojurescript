@@ -321,33 +321,41 @@
          :root      (.-href (root))}))
 
 (defn connect-vite!
-  "Connects to the REPL through Vite's hot module reloading websocket, hot
-  is import.meta.hot. Says hello again when the websocket reconnects,
-  reports focus and visibility changes, which pick the runtime evaluating
-  forms by default. Defines cljs_eval(code, opts), console-eval for the
-  browser's console: cljs_eval(\"(+ 1 2)\"), cljs_eval(\"(foo)\", {ns:
-  \"my.app\", await: true})."
+  "Connects to the REPL through Vite's hot module reloading websocket (or the
+  channel of the ssr environment's module runner), hot is import.meta.hot.
+  Says hello again when the websocket reconnects, reports focus and
+  visibility changes, which pick the runtime evaluating forms by default.
+  Defines cljs_eval(code, opts), console-eval for the browser's console:
+  cljs_eval(\"(+ 1 2)\"), cljs_eval(\"(foo)\", {ns: \"my.app\", await:
+  true}).
+
+  Connects again when the module is evaluated again (a hot reload of it,
+  whose listeners Vite drops): the connection made last handles the REPL's
+  messages."
   [^js hot]
-  (let [send! (fn [m] (.send hot "cljs:repl" m))
-        state (fn [focused]
-                #js {:op      "focus"
-                     :visible (= "visible" (.-visibilityState (document)))
-                     :focused focused
-                     :title   (.-title (document))})]
-    (set! (.-connected registry) true)
+  (let [send!    (fn [m] (.send hot "cljs:repl" m))
+        token    #js {}
+        current? #(identical? token (.-runtime registry))
+        state    (fn [focused]
+                   #js {:op      "focus"
+                        :visible (= "visible" (.-visibilityState (document)))
+                        :focused focused
+                        :title   (.-title (document))})]
+    (set! (.-runtime registry) token)
     (set! (.-cljs_eval js/globalThis)
       (fn [code opts]
         (console-eval send! code opts)))
-    (.on hot "cljs:repl" #(handle! % send!))
-    (.on hot "vite:ws:connect" #(send! (hello)))
+    (.on hot "cljs:repl" #(when (current?) (handle! % send!)))
+    (.on hot "vite:ws:connect" #(when (current?) (send! (hello))))
     ;; hot reloads re-register modules, after-load hooks have run
-    (.on hot "vite:afterUpdate" #(check-stamp-waiters!))
+    (.on hot "vite:afterUpdate" #(when (current?) (check-stamp-waiters!)))
     (set! (.-registered registry) (fn [_] (js/setTimeout check-stamp-waiters! 0)))
-    (when (document)
+    ;; the first instance's listeners report for the later ones too
+    (when (and (document) (not (.-connected registry)))
       (.addEventListener js/globalThis "focus" #(send! (state true)))
       (.addEventListener (document) "visibilitychange" #(send! (state (.hasFocus (document))))))
+    (set! (.-connected registry) true)
     (send! (hello))))
 
 (when-let [hot (js* "import.meta.hot")]
-  (when-not (.-connected registry)
-    (connect-vite! hot)))
+  (connect-vite! hot))

@@ -28,8 +28,9 @@ starting from 1.
 npm create clojurific@latest
 ```
 
-scaffolds a Vite project (Vanilla, [Reagent](https://reagent-project.github.io) or
-[UIx](https://github.com/pitch-io/uix)), installs it and starts the dev server.
+scaffolds a Vite project (Vanilla, [Reagent](https://reagent-project.github.io/),
+[UIx](https://uix-cljs.dev/), or a [Hono](https://hono.dev/) backend), installs it
+and starts the dev server.
 It needs Node.js 20 and Java 17 or later, and offers to download Java when there's none.
 
 ## Migrating from shadow-cljs ##
