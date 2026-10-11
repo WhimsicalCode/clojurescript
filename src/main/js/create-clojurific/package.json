@@ -1,6 +1,6 @@
 {
   "name": "create-clojurific",
-  "version": "0.12.7",
+  "version": "0.12.8",
   "description": "Scaffolds a ClojureScript project compiled by Clojurific and bundled by Vite: npm create clojurific@latest",
   "license": "EPL-1.0",
   "repository": {
