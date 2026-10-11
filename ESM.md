@@ -115,10 +115,10 @@ loaded meanwhile show the overlay of the current error or warnings.
 
 ```js
 // vite.config.mjs
-import cljs from 'clojurific/vite';
+import cljf from 'clojurific/vite';
 
 export default {
-  plugins: [cljs({ aliases: ['cljs'], config: 'cljs.edn', outputDir: 'out' })],
+  plugins: [cljf({ aliases: ['cljs'], config: 'cljs.edn', outputDir: 'out' })],
 };
 ```
 

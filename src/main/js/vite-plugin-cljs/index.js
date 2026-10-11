@@ -256,7 +256,7 @@ export default module.exports;
  *   defaults to false: only from this machine. A proxy in front of the dev
  *   server must set X-Real-IP to the client's address.
  */
-export default function cljs(options) {
+export default function cljf(options) {
   const manifestName = options.manifest ?? 'manifest.json';
   let config, proc, server, minify, root, cwd, outputDir, compiler;
   // the namespaces of the pages' scripts, compiled as main namespaces
@@ -328,8 +328,8 @@ export default function cljs(options) {
         } else if (event.type === 'compiled' || event.type === 'error') {
           compiled();
           const logger = config?.logger ?? console;
-          if (event.type === 'error') logger.error(`[cljs] ${event.message}`);
-          else logger.info(`[cljs] compiled ${event.namespaces} namespace(s) in ${event.ms}ms`);
+          if (event.type === 'error') logger.error(`[cljf] ${event.message}`);
+          else logger.info(`[cljf] compiled ${event.namespaces} namespace(s) in ${event.ms}ms`);
           if (first && event.type === 'compiled') {
             first = false;
             resolve();
@@ -402,7 +402,7 @@ export default function cljs(options) {
   }
 
   return {
-    name: 'cljs',
+    name: 'cljf',
     // before Vite's resolver, which would take cljs-npm-as: specifiers
     enforce: 'pre',
 
@@ -623,7 +623,7 @@ export default function cljs(options) {
           this.warn('nothing was pruned: package.json has "type": "commonjs", so the bundler treats the project\'s ' +
             '.js files as CommonJS and wraps the ClojureScript they import in initializers. Use "type": "module".');
         }
-        config.logger.info(`[cljs] removed ${pruned.removed} unused statements (${pruneMs}ms), ` +
+        config.logger.info(`[cljf] removed ${pruned.removed} unused statements (${pruneMs}ms), ` +
           `renamed ${Object.keys(renames).length} properties, ` +
           `minified (${Date.now() - start - pruneMs}ms)`);
       }
@@ -686,7 +686,7 @@ export default function cljs(options) {
       // since: a reloaded page runs the output with warnings
       let problem = null;
       const showProblem = err => {
-        problem = { type: 'error', err: { stack: '', plugin: 'cljs', ...err } };
+        problem = { type: 'error', err: { stack: '', plugin: 'cljf', ...err } };
         server.ws.send(problem);
       };
       server.ws.on('connection', socket => problem && socket.send(JSON.stringify(problem)));
@@ -702,14 +702,14 @@ export default function cljs(options) {
         for (const name of ssrEntries) {
           const file = info?.entries?.[name];
           if (!file) {
-            config.logger.error(`[cljs] ssrEntries: no :js-entries ${name}`, { timestamp: true });
+            config.logger.error(`[cljf] ssrEntries: no :js-entries ${name}`, { timestamp: true });
             continue;
           }
           try {
             await runner.import(path.join(outputDir, file));
             ssrEntries = ssrEntries.filter(n => n !== name);
           } catch (e) {
-            config.logger.error(`[cljs] running ${name} (${file}): ${e.stack ?? e}`, { timestamp: true });
+            config.logger.error(`[cljf] running ${name} (${file}): ${e.stack ?? e}`, { timestamp: true });
           }
         }
       };
@@ -738,7 +738,7 @@ export default function cljs(options) {
             send({
               op: 'console-result',
               rid: data.rid,
-              result: { error: 'cljs_eval only runs in pages on the dev server\'s machine, see the cljs plugin\'s replRemoteConsole' },
+              result: { error: 'cljs_eval only runs in pages on the dev server\'s machine, see the cljf plugin\'s replRemoteConsole' },
             });
             return;
           }
@@ -829,7 +829,7 @@ export default function cljs(options) {
         const outstanding = [...warnings.values()].flat();
         if (event.type === 'compiled' && outstanding.length) {
           const [first] = outstanding;
-          config.logger.warn(`[cljs] compiled ${event.namespaces} namespace(s) in ${event.ms}ms, ` +
+          config.logger.warn(`[cljf] compiled ${event.namespaces} namespace(s) in ${event.ms}ms, ` +
             `hot reload paused by ${outstanding.length} warning(s)`, { timestamp: true });
           showProblem({
             message: outstanding
@@ -840,7 +840,7 @@ export default function cljs(options) {
           });
           ready();
         } else if (event.type === 'compiled') {
-          config.logger.info(`[cljs] compiled ${event.namespaces} namespace(s) in ${event.ms}ms`, { timestamp: true });
+          config.logger.info(`[cljf] compiled ${event.namespaces} namespace(s) in ${event.ms}ms`, { timestamp: true });
           problem = null;
           // the namespaces held back that this compile didn't update
           const client = server.environments.client;
@@ -850,7 +850,7 @@ export default function cljs(options) {
           runSsrEntries();
           ready();
         } else if (event.type === 'error') {
-          config.logger.error(`[cljs] ${event.message}`, { timestamp: true });
+          config.logger.error(`[cljf] ${event.message}`, { timestamp: true });
           showProblem({
             message: event.message,
             id: event.file,

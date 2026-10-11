@@ -38,9 +38,9 @@ printf '(ns smoke.core)\n(println "smoke" (+ 1 2))\n' > "$project/src/smoke/core
   printf '(ns smoke.extra)\n(println "extra")\n' > src/smoke/extra.cljs
   printf 'import "./smoke/extra.cljs";\n' > src/entry.js
   printf '<!doctype html>\n<script type="module" src="/src/smoke/core.cljs"></script>\n<script type="module" src="/src/entry.js"></script>\n' > index.html
-  printf '%s\n' "import cljs from 'clojurific/vite';" \
+  printf '%s\n' "import cljf from 'clojurific/vite';" \
     "export default {" \
-    "  plugins: [cljs({ outputDir: 'target/cljs' })]," \
+    "  plugins: [cljf({ outputDir: 'target/cljs' })]," \
     "  // the polyfill needs a document, the bundle runs in Node.js here" \
     "  build: { modulePreload: { polyfill: false } }," \
     "};" > vite.config.mjs

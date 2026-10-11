@@ -28,10 +28,10 @@ Dependencies and source paths come from the project's `deps.edn`:
 
 ```js
 // vite.config.mjs
-import cljs from 'clojurific/vite';
+import cljf from 'clojurific/vite';
 
 export default {
-  plugins: [cljs({ outputDir: 'target/cljs' })],
+  plugins: [cljf({ outputDir: 'target/cljs' })],
 };
 ```
 
@@ -57,7 +57,7 @@ npx cljf repl
 ```
 
 `cljf repl` is a ClojureScript REPL evaluating in the pages the dev server
-runs, through its nREPL server: `cljs({ outputDir: 'target/cljs',
+runs, through its nREPL server: `cljf({ outputDir: 'target/cljs',
 compilerOptions: { repl: { 'nrepl-port': 0 } } })` with `nrepl/nrepl` in
 `deps.edn`.
 

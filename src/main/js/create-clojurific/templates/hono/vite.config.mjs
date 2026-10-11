@@ -1,4 +1,4 @@
-import cljs from 'clojurific/vite';
+import cljf from 'clojurific/vite';
 import devServer from '@hono/vite-dev-server';
 import build from '@hono/vite-build/node';
 
@@ -7,7 +7,7 @@ const entry = 'target/cljs/cljs-esm-entries/server.js';
 
 export default {
   plugins: [
-    cljs({
+    cljf({
       outputDir: 'target/cljs',
       compilerOptions: {
         'js-entries': { server: { exports: { default: "'{{ns}}/app" } } },
@@ -27,7 +27,7 @@ export default {
       // namespaces in place: defonce keeps its value
       loadModule: async (server, entry) => (await server.environments.ssr.runner.import(entry)).default,
     }),
-    // the cljs plugin minifies, after pruning unused protocol implementations
+    // the cljf plugin minifies, after pruning unused protocol implementations
     build({ entry, emptyOutDir: true, minify: false }),
   ],
 };

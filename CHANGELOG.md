@@ -5,6 +5,10 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ## 0.12.8 [Next]
 
+### Changed
+
+- The Vite plugin is named `cljf` instead of `cljs`: its log lines start with `[cljf]`, and `create-clojurific`'s projects and the docs import it as `cljf` (`import cljf from 'clojurific/vite'`).
+
 ## 0.12.7 [2026-10-11]
 
 ### Added

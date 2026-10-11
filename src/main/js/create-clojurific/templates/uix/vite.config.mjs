@@ -1,8 +1,8 @@
-import cljs from 'clojurific/vite';
+import cljf from 'clojurific/vite';
 
 export default {
   plugins: [
-    cljs({
+    cljf({
       outputDir: 'target/cljs',
       // the dev server starts an nREPL server, its port in .nrepl-port
       compilerOptions: { repl: { 'nrepl-port': 0 } },

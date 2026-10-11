@@ -52,10 +52,10 @@ then move `shadow-cljs.edn` over:
 
 ```js
 // vite.config.mjs
-import cljs from 'clojurific/vite';
+import cljf from 'clojurific/vite';
 
 export default {
-  plugins: [cljs({ config: 'cljs.edn', outputDir: 'target/cljs',
+  plugins: [cljf({ config: 'cljs.edn', outputDir: 'target/cljs',
                    compilerOptions: { 'npm-interop': ':shadow' } })],
 };
 ```
