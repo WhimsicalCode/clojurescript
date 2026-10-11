@@ -154,7 +154,7 @@
       (throw (ex-info (cond
                         runtime-id (str "No runtime " runtime-id ", see (cljf.esm.repl/runtimes)")
                         tag        (str "No runtime tagged " (pr-str tag) ", see (cljf.esm.repl/runtimes)")
-                        :else      "No JavaScript runtime connected: open a page running the build")
+                        :else      "No JavaScript runtime connected: open a page running the build, or start a server running it")
                {:runtime-id runtime-id :tag tag :runtimes (runtimes)}))))
 
 (defn- request!
@@ -588,7 +588,8 @@
   [runtime-id stack]
   (when stack
     (let [lines (string/split-lines stack)
-          lines (take-while #(not (re-find #"/cljf/esm/repl_runtime\.js" %)) lines)]
+          ;; mapped to its source already in Vite's ssr module runner
+          lines (take-while #(not (re-find #"/cljf/esm/repl_runtime\.(?:js|cljs):" %)) lines)]
       (->> lines
            (map #(string/replace % #"((?:https?://|file://|cljs-repl/)[^\s()]+):(\d+):(\d+)"
                    (fn [[match url line column]]

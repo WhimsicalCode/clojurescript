@@ -5,6 +5,15 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ## 0.12.7 [Next]
 
+### Added
+
+- `npm create clojurific@latest` scaffolds a [Hono](https://hono.dev/) backend (`--template hono`): its app is a `:js-entries` export the dev server runs and hot reloads with `@hono/vite-dev-server`, `npm run build` bundles it into a Node.js server, `npm run repl` evaluates in it. The framework prompt links to each framework's site.
+- The REPL evaluates in servers the Vite dev server's ssr environment runs: under `:esm-repl`, `:js-entries` modules import the REPL runtime first, which connects through the module runner's hot channel. The plugin's `ssrEntries` option runs entries in the ssr environment once compiled, so the REPL has a runtime before the server's first request.
+
+### Fixed
+
+- The REPL stopped answering a runtime whose REPL runtime module was hot reloaded (i.e. by a late file event of the dev server's first compile): Vite drops the listeners of the module's previous instance, the new instance now connects again.
+
 ## 0.12.6 [2026-10-10]
 
 ### Changed

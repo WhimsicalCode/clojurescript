@@ -127,6 +127,27 @@
       (build {:main 'test.x :extra-main '[test.m]})
       (is (string/includes? (output dir 'test.m) "import \"./p.js\";")))))
 
+(deftest js-entries-import-the-preloads-and-the-repl-runtime
+  (let [dir     (temp-dir)
+        ms      (- (System/currentTimeMillis) 60000)
+        sources (into {} [(write-source! dir 'test.p "(ns test.p)" ms)
+                          (write-source! dir 'test.s "(ns test.s) (def app 1)" ms)])
+        build   #(binding [esm/*generated-sources* sources]
+                   (esm/build (merge {:preloads '[test.p] :output-dir (str (io/file dir "out"))
+                                      :js-entries '{server {:exports {default test.s/app}}}}
+                                 %)))
+        entry   #(slurp (io/file dir "out" "cljs-esm-entries" "server.js"))]
+    (build {})
+    (is (= (str "import \"../test/p.js\";\n"
+                "export { app as default } from \"../test/s.js\";\n")
+           (entry)))
+    (testing "under :esm-repl the REPL runtime first, the REPL evaluates in a server running the entry"
+      (build {:esm-repl true ::esm/repl-mains (atom #{})})
+      (is (= (str "import \"../cljf/esm/repl_runtime.js\";\n"
+                  "import \"../test/p.js\";\n"
+                  "export { app as default } from \"../test/s.js\";\n")
+             (entry))))))
+
 (deftest reuses-output-compiled-with-a-released-version
   (let [dir     (temp-dir)
         sources (into {} [(write-source! dir 'test.h "(ns test.h)" (- (System/currentTimeMillis) 60000))])]

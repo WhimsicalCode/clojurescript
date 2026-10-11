@@ -27,8 +27,9 @@ Options:
 
 const FRAMEWORKS = [
   { value: 'vanilla', label: 'Vanilla', color: c.yellow },
-  { value: 'reagent', label: 'Reagent', color: c.cyan },
-  { value: 'uix', label: 'UIx', color: c.magenta },
+  { value: 'reagent', label: 'Reagent', color: c.cyan, hint: 'https://reagent-project.github.io/' },
+  { value: 'uix', label: 'UIx', color: c.magenta, hint: 'https://uix-cljs.dev/' },
+  { value: 'hono', label: 'Hono (backend only)', color: c.red, hint: 'https://hono.dev/' },
 ];
 
 function parse(argv) {

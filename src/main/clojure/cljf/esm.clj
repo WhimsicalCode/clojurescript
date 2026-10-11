@@ -251,14 +251,15 @@
   "Writes the :js-entries modules, {name {:exports {js-name ns/var}}}: each
   exports vars of the build under JavaScript names, like shadow-cljs'
   :exports. The namespaces are compiled, the entries are bundle entry points,
-  importing the :preloads first."
-  [{:keys [output-dir js-entries preloads]}]
+  importing the :preloads first, and under :esm-repl the REPL runtime, as main
+  namespaces do: the REPL evaluates in a server running an entry."
+  [{:keys [output-dir js-entries preloads esm-repl]}]
   (doseq [[entry {:keys [exports]}] js-entries
           :let [path (js-entry-path entry)]]
     (spit-if-changed (io/file output-dir path)
       (apply str
         (concat
-          (for [preload preloads]
+          (for [preload (distinct (map symbol (cond->> preloads esm-repl (cons comp/esm-repl-runtime))))]
             (str "import \"" (relative-import path (util/ns->relpath (symbol preload) :js)) "\";\n"))
           (for [[js-name sym] (sort-by (comp name key) exports)]
           (str "export { " (comp/esm-var-name (name sym)) " as " (name js-name) " } from \""

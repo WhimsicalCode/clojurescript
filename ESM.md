@@ -102,7 +102,7 @@ dependency).
 ### Vite
 
 `npm create clojurific@latest` scaffolds a project with the plugin (Vanilla,
-Reagent or UIx), see `src/main/js/create-clojurific`.
+Reagent, UIx, or a Hono backend), see `src/main/js/create-clojurific`.
 
 `src/main/js/vite-plugin-cljs` runs the compiler: a one-shot build for
 `vite build` (the main namespaces are the bundle's entry points), watch mode for
@@ -158,7 +158,11 @@ prune; the plugin warns then.
 
 `:js-entries` are bundle inputs too, their exports kept: a build of a library or
 a Node service's worker (`build.ssr`) is one module exporting what the entry
-names. The plugin's `entries` option picks the ones a build bundles.
+names. The plugin's `entries` option picks the ones a build bundles. Its
+`ssrEntries` option runs entries in the dev server's ssr environment once
+they're compiled, i.e. a server's, which a plugin like `@hono/vite-dev-server`
+imports from the same module runner: the REPL evaluates in it before its
+first request.
 `vite build --watch` runs the compiler's watch, and rebundles when it
 recompiles.
 
@@ -214,9 +218,11 @@ the compiler's and the project's sources are.
 ### REPL
 
 `watch` evaluates forms in the pages running the build: browser tabs, the
-Electron window (runtimes). Messages go through Vite's websocket and the
-plugin's pipe to the compiler, nothing else listens on a port but the
-optional nREPL server (`:repl`), which runs in the watcher's JVM:
+Electron window, and servers the dev server's ssr environment runs (runtimes).
+Messages go through Vite's websocket (the ssr environment's module runner's
+hot channel, in the dev server's process) and the plugin's pipe to the
+compiler, nothing else listens on a port but the optional nREPL server
+(`:repl`), which runs in the watcher's JVM:
 
 ```clojure
 (require '[cljf.esm.repl :as repl])
@@ -487,8 +493,8 @@ Hello world: 177 KB / 35 KB gzipped (Closure advanced: 110 KB / 23 KB).
   `goog.getUid` (used by `hash` for JavaScript objects) gives frozen objects
   stable ids from a `WeakMap` rather than failing.
 
-- REPL: no Node.js runtime transport yet (the runtime's tests use one), npm
-  modules can't be required at the REPL.
+- REPL: Node.js runtimes only through Vite's dev server (its ssr environment),
+  not a build run with `node`; npm modules can't be required at the REPL.
 - FlowStorm: ClojureStorm instruments through its own build of the compiler,
   which doesn't have `cljf.esm`.
 - `cljs.core` references `goog.math.Long` / `goog.math.Integer` for `integer?`,
