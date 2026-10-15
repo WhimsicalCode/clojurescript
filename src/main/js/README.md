@@ -87,7 +87,7 @@ npx cljf setup-java
 | `CLJF_MAVEN_REPO` | a Maven Central mirror to download the dependency resolver from; other dependencies use `:mvn/repos` |
 | `CLJF_CACHE_DIR` | where `setup-java` installs Java |
 
-See [ESM.md](https://github.com/WhimsicalCode/clojurific/blob/main/ESM.md) for
+See [README.md](https://github.com/WhimsicalCode/clojurific/blob/main/README.md) for
 compiler options, the Vite plugin's options, the REPL and how the launcher
 works.
 

@@ -4,7 +4,7 @@ Clojurific is a fork of ClojureScript: `:module-format :esm` compiles namespaces
 bundled by Vite, without the Closure Compiler. Its coordinate is `com.whimsical/clojurific`;
 ClojureScript's namespaces stay `cljs.*`, so libraries written for ClojureScript work unchanged,
 and the fork's own are `cljf.*` (`cljf.esm`, `cljf.x`). Read
-[`ESM.md`](ESM.md) (usage, design, known gaps) before changing it.
+[`README.md`](README.md) (usage, design, known gaps) before changing it.
 
 ## Where things are
 
