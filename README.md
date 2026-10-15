@@ -23,17 +23,13 @@ Clojurific is a fork of the [ClojureScript](https://github.com/clojure/clojuresc
 * Browser and backend support
 * Integrated REPL in dev for both browser and backend
 * Doesn't need extern definitions
-* 2x faster build times and hot reload [^1]
-* About 40% less time on runtime benchmarks [^2]
-* Bundle sizes comparable to the classic compiler with advanced optimizations
+* 2x faster build times and hot reload ([Build speed](#build-speed-and-bundle-size))
+* About 40% less time on runtime benchmarks ([Runtime](#runtime))
+* Bundle sizes comparable to the classic compiler with advanced optimizations ([Bundle size](#build-speed-and-bundle-size))
 
-This is a new project and the fork's changes are mostly written by agents. Whimsical uses Clojurific in production for both frontend and backend services, but it hasn't yet been extensively tested in other environments. 
+This is a new project and the fork's changes are mostly written by agents. Whimsical uses Clojurific in production for both frontend and backend services, but it hasn't yet been extensively tested in other environments.
 
 [`CHANGELOG.md`](CHANGELOG.md) lists the changes in each release.
-
-[^1]: These are production build times for the 400K LOC Whimsical app, compared to the classic compiler with advanced optimizations. We haven't run automated benchmarks for dev build times and hot reload speed, but subjectively it feels more than twice as fast as shadow-cljs.
-
-[^2]: ClojureScript's own [benchmarks](benchmark/cljs/benchmark_runner.cljs) take 42% less time in total than a shadow-cljs release build, and the more elaborate Whimsical-specific benchmarks about 30% less. See [Performance](#performance).
 
 ## Contents
 
@@ -403,6 +399,8 @@ Measured on the 400K LOC Whimsical app (Apple Silicon laptop):
 | total JS, gzip / brotli | 5.93 / 4.72 MB | 6.04 / 4.82 MB |
 | initial page load, gzip / brotli | 4.17 / 3.32 MB | 4.55 / 3.65 MB |
 | incremental compile | | 150-230ms per changed namespace |
+
+We haven't run automated benchmarks of dev build times and hot reload speed, but subjectively they feel more than twice as fast as shadow-cljs's.
 
 Hello world: 177 KB / 35 KB gzipped (Closure advanced: 110 KB / 23 KB).
 
