@@ -31,8 +31,12 @@
   "Switches the nREPL session evaluating it to ClojureScript, see
   cljf.esm.repl/repl."
   [opts]
-  (let [{:keys [session]} eval/*msg*]
-    (swap! session assoc #'*cljs* {:ns 'cljs.user :opts opts})
+  (let [{:keys [session]} eval/*msg*
+        cljs {:ns 'cljs.user :opts opts}]
+    (swap! session assoc #'*cljs* cljs)
+    ;; after :cljs/quit the session binds *cljs*, and nREPL stores the eval's
+    ;; bindings in the session when it ends
+    (when (thread-bound? #'*cljs*) (set! *cljs* cljs))
     (println (str "; ClojureScript REPL in namespace cljs.user, " (count (repl/runtimes))
                " runtime(s) connected, :cljs/quit to leave"))
     nil))

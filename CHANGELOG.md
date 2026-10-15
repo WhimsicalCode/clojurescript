@@ -31,6 +31,7 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 - A `nil` value in `:closure-defines` (the Vite plugin's `null`) doesn't set the define: `goog.DEBUG` set to `nil` was emitted as `nil`, a build throwing a `ReferenceError` on load, rather than its default (`false` in a `:release` build).
 - A `:test-runner` without `:ns` or a namespace-qualified `:runner` fails the build with a message saying so, rather than a `NullPointerException`.
 - Namespaces compiled against an analysis read from the analysis cache emit the same code as against a fresh one: the cache keeps the metadata of vars' arglists (i.e. `{:pre ...}`, which sci's `copy-var` copies) and the reader's Integer source positions, which it turned into Longs (emitted in parens).
+- `(cljf.esm.repl/repl)` switches an nREPL session to ClojureScript again after `:cljs/quit` in it. The session kept evaluating Clojure.
 
 ## 0.12.11 [2026-10-27]
 
