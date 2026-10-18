@@ -56,6 +56,7 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 ### Added
 
 - The nREPL server takes middleware from `:repl`'s `:middleware` and from nREPL's configuration files (`.nrepl.edn`, `~/.nrepl/nrepl.edn`), i.e. `cider.nrepl/cider-middleware`.
+- With cider-nrepl, nREPL sessions switched to ClojureScript complete and look up the build's namespaces and vars, and complete JavaScript properties in the runtime, through clj-suitable.
 
 ### Changed
 

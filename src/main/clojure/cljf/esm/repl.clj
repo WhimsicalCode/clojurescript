@@ -157,6 +157,14 @@
                         :else      "No JavaScript runtime connected: open a page running the build, or start a server running it")
                {:runtime-id runtime-id :tag tag :runtimes (runtimes)}))))
 
+(defn target-id
+  "Returns the id of the runtime that opts (:runtime-id, :tag) target, the
+  default one without them, or nil when it isn't connected."
+  [opts]
+  (try
+    (:runtime-id (target opts))
+    (catch clojure.lang.ExceptionInfo _ nil)))
+
 (defn- request!
   "Sends msg to runtime runtime-id, returns its reply, {:error ...} if it
   doesn't reply within timeout ms."
@@ -247,6 +255,12 @@
   [ns]
   (when-not (ana/get-namespace ns)
     (swap! env/*compiler* assoc-in [::ana/namespaces ns] {:name ns})))
+
+(defn compiler-env
+  "Returns the build's compiler environment (an atom), or nil without a
+  build."
+  []
+  (:compiler-env @build))
 
 (defn cljs-ns?
   "Whether ns is a ClojureScript namespace of the build or the REPL."

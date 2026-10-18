@@ -300,7 +300,7 @@ compilerOptions: { repl: { 'nrepl-port': 0, middleware: ['cider.nrepl/cider-midd
 {:repl {:nrepl-port 0 :middleware [cider.nrepl/cider-middleware]}}
 ```
 
-Middleware that doesn't load is left out with a warning.
+Middleware that doesn't load is left out with a warning. With cider-nrepl 0.61 or later, a session switched to ClojureScript completes and looks up (`info`, `eldoc`) ClojureScript namespaces and vars from the build's compiler environment, through clj-suitable. Completions of JavaScript properties (`js/document.getE…`, CIDER's `cider-enhanced-cljs-completion-p`) are clj-suitable's too: its piggieback and shadow-cljs support doesn't cover these sessions, so they evaluate its completion forms with `cljf.esm.repl/cljs-eval`, after requiring `suitable.js-introspection` in the runtime.
 
 ### Migrating from shadow-cljs
 
