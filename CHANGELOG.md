@@ -53,6 +53,10 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ## 0.12.8 [2026-10-26]
 
+### Added
+
+- The nREPL server takes middleware from `:repl`'s `:middleware` and from nREPL's configuration files (`.nrepl.edn`, `~/.nrepl/nrepl.edn`), i.e. `cider.nrepl/cider-middleware`.
+
 ### Changed
 
 - The Vite plugin is named `cljf` instead of `cljs`: its log lines start with `[cljf]`, and `create-clojurific`'s projects and the docs import it as `cljf` (`import cljf from 'clojurific/vite'`).

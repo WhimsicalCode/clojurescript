@@ -136,20 +136,55 @@
                      (.delete f))))))
     written))
 
+(defn- middleware-vars
+  "Resolves a middleware name (a symbol or string) to vars as nrepl.cmdline
+  does. A var holding a collection of names, such as
+  cider.nrepl/cider-middleware, resolves to the middleware it names. A name
+  that doesn't resolve resolves to no vars, with a warning."
+  [n]
+  (if-let [v (if (var? n)
+               n
+               (try
+                 (or (requiring-resolve (symbol n))
+                     (throw (ex-info "no such var" {})))
+                 (catch Exception e
+                   (binding [*out* *err*]
+                     (println "cljf.esm.repl: nREPL middleware" n "not loaded:" (.getMessage e)))
+                   nil)))]
+    (if (sequential? @v) (mapcat middleware-vars @v) [v])
+    []))
+
+(defn- configured-middleware
+  "Returns the middleware names of :repl's :middleware, followed by those of
+  nREPL's configuration (nrepl.config/config, the project's .nrepl.edn over
+  the user's nrepl.edn). nREPL before 0.5 has no configuration."
+  [middleware]
+  (let [names  #(map symbol (if (or (symbol? %) (string? %)) [%] %))
+        config (try
+                 (some-> (requiring-resolve 'nrepl.config/config) deref)
+                 (catch java.io.FileNotFoundException _ nil))]
+    (distinct (concat (names middleware) (names (:middleware config))))))
+
 (defn start-server!
   "Starts the nREPL server of :repl options, {:nrepl-port 0 (random)
-  :nrepl-host \"127.0.0.1\" :port-files [\".nrepl-port\"]}. Its sessions
-  evaluate Clojure in the watcher's JVM, (cljf.esm.repl/repl) switches one
-  to ClojureScript."
-  [{:keys [nrepl-port nrepl-host port-files] :or {nrepl-host "127.0.0.1" port-files [".nrepl-port"]}}]
-  (let [server (server/start-server
+  :nrepl-host \"127.0.0.1\" :port-files [\".nrepl-port\"] :middleware []}.
+  :middleware names middleware added to nREPL's default handler, as do the
+  :middleware of nREPL's configuration files. Its sessions evaluate Clojure
+  in the watcher's JVM, (cljf.esm.repl/repl) switches one to ClojureScript."
+  [{:keys [nrepl-port nrepl-host port-files middleware] :or {nrepl-host "127.0.0.1" port-files [".nrepl-port"]}}]
+  (let [loaded (keep #(when-let [vs (seq (middleware-vars %))] [% vs])
+                 (configured-middleware middleware))
+        names  (map first loaded)
+        extra  (mapcat second loaded)
+        server (server/start-server
                  :bind nrepl-host
                  :port (if (true? nrepl-port) 0 nrepl-port)
-                 :handler (server/default-handler #'wrap-cljs-repl))
+                 :handler (apply server/default-handler #'wrap-cljs-repl extra))
         port   (:port server)
         files  (write-port-files! port port-files)]
     (println (str "[cljf.esm.repl] nREPL server on " nrepl-host ":" port
                (when (seq files) (str " (" (string/join ", " files) ")"))
+               (when (seq names) (str " with " (string/join ", " names)))
                ", (cljf.esm.repl/repl) evaluates ClojureScript"))
     (flush)
     server))
