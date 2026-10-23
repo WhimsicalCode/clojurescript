@@ -401,6 +401,10 @@ export default module.exports;
  *   its ssr environment once they're compiled, i.e. a server's (which a
  *   plugin like @hono/vite-dev-server imports from the same runner): the REPL
  *   evaluates in them before their first request
+ * @param {boolean} [options.ignoreWarnings] hot reload despite compiler
+ *   warnings, like shadow-cljs' :devtools {:ignore-warnings true}: they go
+ *   to the terminal only, defaults to false: hot reload pauses while any
+ *   namespace has warnings, and the overlay shows them
  * @param {boolean} [options.replRemoteConsole] accept cljs_eval (forms the
  *   compiler compiles, running its macros) from pages on other hosts too,
  *   defaults to false: only from this machine. A proxy in front of the dev
@@ -417,7 +421,8 @@ export default function cljf(options) {
   const localModules = new Set();
   // Like shadow-cljs, the output isn't hot reloaded while namespaces have
   // warnings, it would fail at runtime (undeclared vars): the warnings by
-  // output file, and the output held back until they're fixed.
+  // output file, and the output held back until they're fixed (not with
+  // options.ignoreWarnings: the warnings are only counted then).
   const warnings = new Map();
   const held = new Set();
 
@@ -978,7 +983,7 @@ export default function cljf(options) {
         if (event.type === 'compiled') {
           for (const file of event.files ?? []) warnings.delete(file);
           for (const w of event.warnings ?? []) warnings.set(w.output, [...(warnings.get(w.output) ?? []), w]);
-          if (warnings.size) {
+          if (warnings.size && !options.ignoreWarnings) {
             for (const file of event.files ?? []) held.add(file);
           } else {
             released = [...held].filter(file => !event.files?.includes(file));
@@ -993,7 +998,7 @@ export default function cljf(options) {
           await writeManifest(Object.fromEntries(Object.entries(info.main).map(([ns, file]) =>
             [ns, { scripts: [`${config.base}@vite/client`, devUrl(file)], preload: [] }])));
         }
-        const outstanding = [...warnings.values()].flat();
+        const outstanding = options.ignoreWarnings ? [] : [...warnings.values()].flat();
         if (event.type === 'compiled' && outstanding.length) {
           const [first] = outstanding;
           config.logger.warn(`[cljf] compiled ${event.namespaces} namespace(s) in ${event.ms}ms, ` +
@@ -1005,9 +1010,15 @@ export default function cljf(options) {
             id: first.file,
             loc: first.file ? { file: first.file, line: first.line, column: first.column } : undefined,
           });
+          // The ssr entries run regardless: they run once, and a warning is no
+          // error. A page a server entry serves shows the overlay above; a
+          // port that never opens shows nothing but the line above.
+          runSsrEntries();
           ready();
         } else if (event.type === 'compiled') {
-          config.logger.info(`[cljf] compiled ${event.namespaces} namespace(s) in ${event.ms}ms`, { timestamp: true });
+          const ignored = [...warnings.values()].flat().length;
+          config.logger.info(`[cljf] compiled ${event.namespaces} namespace(s) in ${event.ms}ms` +
+            (ignored ? `, ${ignored} warning(s) ignored` : ''), { timestamp: true });
           problem = null;
           // the namespaces held back that this compile didn't update
           const client = server.environments.client;
