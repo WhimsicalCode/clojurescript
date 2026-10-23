@@ -5,9 +5,17 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ## 0.12.8 [Next]
 
+### Added
+
+- The Vite plugin's `ignoreWarnings` option hot reloads despite compiler warnings, like shadow-cljs' `:devtools {:ignore-warnings true}`: they go to the terminal only, where the compiled line counts them.
+
 ### Changed
 
 - The Vite plugin is named `cljf` instead of `cljs`: its log lines start with `[cljf]`, and `create-clojurific`'s projects and the docs import it as `cljf` (`import cljf from 'clojurific/vite'`).
+
+### Fixed
+
+- The dev server didn't run its `ssrEntries` while any namespace had a compiler warning, a browser namespace's too: a server entry never started, with one line in the terminal and no page to show the overlay on. The entries run once compiled regardless, and the page a server serves shows the warnings.
 
 ## 0.12.7 [2026-10-11]
 
