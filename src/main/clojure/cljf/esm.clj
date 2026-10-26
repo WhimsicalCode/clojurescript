@@ -396,11 +396,13 @@
                    (recur (ex-cause e))
                    e))))
       (finally
-        ;; after a failure: the namespaces waiting aren't compiled, and the
-        ;; ones compiling finish before the build returns, i.e. before the
-        ;; watcher's next build
-        (.shutdownNow pool)
-        (.awaitTermination pool 10 TimeUnit/MINUTES)))))
+        ;; after a failure, the namespaces not requiring the failed one are
+        ;; compiled still (i.e. recompiled for a changed api, *api-changed*
+        ;; doesn't outlive the build), the ones requiring it fail getting
+        ;; it, and all of them finish before the build returns, i.e. before
+        ;; the watcher's next build
+        (.shutdown pool)
+        (.awaitTermination pool 1 TimeUnit/HOURS)))))
 
 (defn- ensure-analyzed!
   "Namespaces up to date aren't recompiled, nor analyzed. Reads their

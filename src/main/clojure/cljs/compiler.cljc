@@ -2814,7 +2814,7 @@
                    (.shutdownNow ^ExecutorService emitter)
                    (try
                      (.awaitTermination ^ExecutorService emitter 1 TimeUnit/MINUTES)
-                     ;; the build stopping the other namespaces' compiles
+                     ;; the thread interrupted: the failure is thrown still
                      (catch InterruptedException _)))
                  (throw e)))))))))
 
