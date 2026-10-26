@@ -5,6 +5,10 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ## 0.12.10 [Next]
 
+### Changed
+
+- `:release` builds (the `:release` profile, `cljf.esm build` without a profile, and the Vite plugin's `vite build`) define `goog.DEBUG` false unless `:closure-defines` sets it, like shadow-cljs' release mode: code under `goog.DEBUG` is left out of production bundles without configuration. Set `:closure-defines {goog.DEBUG true}` to keep it.
+
 ## 0.12.9 [2026-10-26]
 
 ### Added

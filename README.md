@@ -115,7 +115,7 @@ Options are EDN maps, `@file.edn` to read them from a file, and `:profile` keywo
 {:main [my.app]
  :build-hooks [[my.build/hook {:some :arg}]]
  :profiles {:dev {:preloads [my.dev]}
-            :release {:closure-defines {goog.DEBUG false}}}}
+            :release {:optimize-constants true}}}
 ```
 
 `cljf.esm/build` and `cljf.esm/watch` take the usual compiler options plus:
@@ -128,7 +128,7 @@ Options are EDN maps, `@file.edn` to read them from a file, and `:profile` keywo
 | `:preloads` | namespaces the main namespaces import first |
 | `:parallel-build` | compiles namespaces in parallel once their dependencies are compiled |
 | `:npm-interop :shadow` | `["pkg" :as x]` binds CommonJS packages' `module.exports`, like shadow-cljs; needs the Vite plugin |
-| `:closure-defines {goog.DEBUG false}` | `goog.DEBUG` and `goog-define`s are compile time constants |
+| `:closure-defines {goog.DEBUG false}` | `goog.DEBUG` and `goog-define`s are compile time constants. `goog.DEBUG` is `false` in `:release` builds (the `:release` profile, and `build` without a profile), like shadow-cljs' release mode, unless `:closure-defines` sets it |
 | `:build-hooks` | `[[fn-sym & args]]`, called with the build (`:compiler-env`, `:namespaces` in dependency order, `:mode`, `:options`, `:trigger` and `:changed-namespaces`) after a build (`:trigger :build`), every watch recompile (`:watch`) and REPL forms changing a namespace's analysis (`:repl-eval`) |
 | `:warnings` | a map of warning types (`true`, `false`, `:warning`, `:error`, `:off`), or one of them for the undeclared var warnings, like `cljs.closure` |
 | `:warnings-as-errors true` | every enabled warning fails the compile, like shadow-cljs |

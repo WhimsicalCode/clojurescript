@@ -457,9 +457,18 @@
    #'*assert*            (not= true (:elide-asserts opts))
    #'ana/*load-tests*    (not= false (:load-tests opts))})
 
+(defn- release-defines
+  "A :release build is a production build: goog.DEBUG is false unless
+  :closure-defines sets it, like shadow-cljs' release mode."
+  [{:keys [mode] :as opts}]
+  (cond-> opts
+    (and (= :release mode) (not (contains? (:closure-defines opts) "goog.DEBUG")))
+    (assoc-in [:closure-defines "goog.DEBUG"] false)))
+
 (defn- prepare-opts [opts]
   (-> (merge default-opts opts)
       (update :closure-defines normalize-closure-defines)
+      release-defines
       ;; as cljs.closure: keyword and symbol constants are hoisted into a
       ;; constants module (see write-constants!)
       (cond-> (true? (:optimize-constants opts)) (assoc :emit-constants true))

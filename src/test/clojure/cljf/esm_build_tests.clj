@@ -224,3 +224,18 @@
       (finally
         (.setContextClassLoader thread loader)
         (pop-thread-bindings)))))
+
+(deftest release-builds-define-goog-debug-false
+  (let [dir     (temp-dir)
+        ms      (- (System/currentTimeMillis) 60000)
+        sources (into {} [(write-source! dir 'test.dbg "(ns test.dbg) (def debug? goog.DEBUG)" ms)])
+        debug?  (fn [opts]
+                  (binding [esm/*generated-sources* sources]
+                    (esm/build (merge {:main 'test.dbg :output-dir (str (io/file dir "out"))} opts)))
+                  (second (re-find #"test\$dbg\$debug_QMARK_ = (\w+)" (output dir 'test.dbg))))]
+    (is (= "true" (debug? {})))
+    (is (= "true" (debug? {:mode :dev})))
+    (testing "a :release build is a production build, as in shadow-cljs' release mode"
+      (is (= "false" (debug? {:mode :release}))))
+    (testing ":closure-defines sets it in a :release build too"
+      (is (= "true" (debug? {:mode :release :closure-defines '{goog.DEBUG true}}))))))
