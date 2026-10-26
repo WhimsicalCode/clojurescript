@@ -157,3 +157,38 @@
       (is (string/starts-with? (output dir 'test.h) "// Compiled by ClojureScript 1.12.clojurific-0.12.3 "))
       (testing "a second build compiles nothing"
         (is (= #{} (build! dir sources 'test.h)))))))
+
+(defn- executor-threads
+  "The live threads of executors (Executors' default thread names)."
+  []
+  (into #{} (filter #(re-matches #"pool-\d+-thread-\d+" (.getName ^Thread %))) (keys (Thread/getAllStackTraces))))
+
+(deftest parallel-build-errors-name-their-file-and-location
+  (let [dir     (temp-dir)
+        ms      (- (System/currentTimeMillis) 60000)
+        ;; forms analyzed before the failing one, queued for the emitter
+        forms   (apply str (for [i (range 200)] (str "(defn f" i " [x] (let [a (inc x)] (if (pos? a) [a " i "] a)))\n")))
+        bad     (write-source! dir 'test.bad (str "(ns test.bad)\n" forms "(defn g [x] (let [a] x))") ms)
+        sources (into {} (cons bad (for [i (range 4)]
+                                     (write-source! dir (symbol (str "test.d" i))
+                                       (str "(ns test.d" i " (:require [test.bad]))") ms))))
+        main    (write-source! dir 'test.main (str "(ns test.main (:require " (string/join " " (map #(str "[test.d" % "]") (range 4))) "))") ms)
+        before  (executor-threads)
+        err     (try
+                  (binding [esm/*generated-sources* (into sources [main])]
+                    (esm/build {:main 'test.main :output-dir (str (io/file dir "out")) :parallel-build true}))
+                  nil
+                  (catch Throwable e e))
+        data    (#'esm/error-data err)]
+    (is (some? err))
+    (is (= {:file (.getPath ^File (second bad)) :line 202 :column 13} (select-keys data [:file :line :column])))
+    (is (string/ends-with? (:message data) "(expanding cljs.core/let)"))
+    (testing "events print values JSON lacks, i.e. a File in ex-data"
+      (let [out (java.io.StringWriter.)]
+        (with-redefs [esm/stdout (delay out)]
+          (esm/event! "error" {:file (second bad)}))
+        (is (= {"file" (.getPath ^File (second bad)) "type" "error"}
+               (json/read-str (subs (str out) (count "[cljf.esm] ")))))))
+    (testing "the queued emits don't outlive the build, nor leave its output file behind"
+      (is (empty? (remove before (filter #(.isAlive ^Thread %) (executor-threads)))))
+      (is (not (.exists (io/file dir "out" "test" "bad.js.tmp")))))))

@@ -22,7 +22,7 @@
             [clojure.string :as string])
   (:import [java.io File]
            [java.net URL]
-           [java.util.concurrent Executors Future LinkedBlockingQueue]
+           [java.util.concurrent ExecutionException Executors Future LinkedBlockingQueue TimeUnit]
            [java.util.concurrent.locks ReentrantLock]))
 
 (def default-opts
@@ -387,10 +387,20 @@
                        (doseq [^Future d deps] (.get d))
                        (compile-ns input opts)))]
           (swap! futures assoc ns f)))
-      (doseq [^Future f (vals @futures)]
-        (.get f))
+      (doseq [{:keys [ns]} inputs]
+        (.get ^Future (get @futures ns)))
+      (catch ExecutionException e
+        ;; the namespace's failure, not the futures waiting for it
+        (throw (loop [^Throwable e e]
+                 (if (and (instance? ExecutionException e) (ex-cause e))
+                   (recur (ex-cause e))
+                   e))))
       (finally
-        (.shutdown pool)))))
+        ;; after a failure: the namespaces waiting aren't compiled, and the
+        ;; ones compiling finish before the build returns, i.e. before the
+        ;; watcher's next build
+        (.shutdownNow pool)
+        (.awaitTermination pool 10 TimeUnit/MINUTES)))))
 
 (defn- ensure-analyzed!
   "Namespaces up to date aren't recompiled, nor analyzed. Reads their
@@ -592,7 +602,15 @@
   [type m]
   (let [^java.io.Writer out @stdout]
     (locking out
-      (.write out (str "[cljf.esm] " (json/write-str (assoc m :type type)) "\n"))
+      (.write out (str "[cljf.esm] "
+                    ;; i.e. a File in ex-data: printed rather than failing
+                    (json/write-str (assoc m :type type)
+                      :value-fn (fn [_ v]
+                                  (if (or (nil? v) (string? v) (number? v) (boolean? v)
+                                          (keyword? v) (symbol? v) (map? v) (coll? v))
+                                    v
+                                    (str v))))
+                    "\n"))
       (.flush out))))
 
 (defn- collecting-warnings
@@ -610,13 +628,24 @@
                                 :column  (:column env)
                                 :output  (when-let [ns ana/*cljs-ns*] (.getPath (output-file ns opts)))}))))))
 
-(defn- error-data [^Throwable e]
-  (let [data  (ex-data (or (ex-cause e) e))
-        cause (loop [e e] (if-let [c (ex-cause e)] (recur c) e))]
-    {:message (.getMessage cause)
-     :file    (or (:file data) (:clojure.error/source data))
-     :line    (or (:line data) (:clojure.error/line data))
-     :column  (or (:column data) (:clojure.error/column data))}))
+(defn- error-data
+  "The event of a compile error: the innermost cause's message, naming the
+  macro whose expansion failed, and the file, line and column of the first
+  exceptions of the cause chain with them (compile-file's names the file,
+  the analyzer's the location; parallel builds wrap them in
+  ExecutionExceptions)."
+  [^Throwable e]
+  (let [chain  (take-while some? (iterate ex-cause e))
+        datas  (keep ex-data chain)
+        pick   (fn [& ks] (some (fn [d] (some #(get d %) ks)) datas))
+        file   (pick :file :clojure.error/source)
+        symbol (pick :clojure.error/symbol)
+        cause  (last chain)]
+    {:message (cond-> (str (or (.getMessage ^Throwable cause) (.getName (class cause))))
+                symbol (str " (expanding " symbol ")"))
+     :file    (some-> file str)
+     :line    (pick :line :clojure.error/line)
+     :column  (pick :column :clojure.error/column)}))
 
 (defn- source-files
   "All ClojureScript and Clojure (macro) files in dirs with their

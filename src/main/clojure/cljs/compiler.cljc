@@ -2731,80 +2731,92 @@
                  emit (if emitter
                         #(.execute emitter ^Runnable (bound-fn [] (emit %)))
                         emit)]
-             (loop [forms       (ana/forms-seq* rdr (util/path src))
-                    ns-name     nil
-                    deps        []]
-               (if (seq forms)
-                 (let [env (assoc env :ns (ana/get-namespace ana/*cljs-ns*))
-                       {:keys [op] :as ast} (ana/analyze env (first forms) nil opts)]
-                   (cond
-                     (= op :ns)
-                     (let [ns-name (:name ast)
-                           ns-name (if (and (= 'cljs.core ns-name)
-                                         (= "cljc" ext))
-                                     'cljs.core$macros
-                                     ns-name)]
-                       (emit ast)
-                       (recur (rest forms) ns-name (into deps (:deps ast))))
-
-                     (= :ns* (:op ast))
-                     (let [ns-emitted? (some? ns-name)
-                           ns-name (if-not ns-emitted?
-                                     (ana/gen-user-ns src)
-                                     ns-name)]
-                       (if-not ns-emitted?
-                         (emit (assoc ast :name ns-name :op :ns))
-                         (emit ast))
-                       (recur (rest forms) ns-name (into deps (:deps ast))))
-
-                     :else
-                     (let [ns-emitted? (some? ns-name)
-                           ns-name (if-not ns-emitted?
-                                     (ana/gen-user-ns src)
-                                     ns-name)]
-                       (when-not ns-emitted?
-                         (emit {:op :ns
-                                :name ns-name}))
-                       (emit ast)
-                       (recur (rest forms) ns-name deps))))
-                 (let [_ (when emitter
-                           (.shutdown emitter)
-                           (.awaitTermination emitter 1000 TimeUnit/HOURS))
-                       _ (when *esm*
-                           (binding [*esm-emitting* true]
-                             (emit-esm-footer (or ns-name 'cljs.user))))
-                       dts (when *esm*
-                             (esm-dts (or ns-name 'cljs.user) @(:export-syms *esm*)))
-                       sm-data (when *source-map-data* (assoc @*source-map-data*
-                                                         :gen-col (.get ^AtomicLong *source-map-data-gen-col*)))
-                       ret (merge
-                             {:ns         (or ns-name 'cljs.user)
-                              :macros-ns  (:macros-ns opts)
-                              :provides   [ns-name]
-                              :requires   (if (= ns-name 'cljs.core)
-                                            (vec (distinct deps))
-                                            (cond-> (conj (vec (distinct deps)) 'cljs.core)
-                                              (get-in @env/*compiler* [:options :emit-constants])
-                                              (conj ana/constants-ns-sym)))
-                              :file        dest
-                              :out-file    (.toString ^File dest)
-                              :source-file src}
-                             (when sm-data
-                               {:source-map (:source-map sm-data)})
-                             (when dts
-                               {:esm-dts dts}))]
-                   (when (and sm-data (= :none (:optimizations opts)))
-                     (emit-source-map src dest sm-data
-                       (merge opts {:ext ext :provides [ns-name]})))
-                   (let [path (.getPath (.toURL ^File dest))]
-                     (swap! env/*compiler* assoc-in [::compiled-cljs path] ret))
-                   (ana/ensure-defs ns-name)
-                   (let [{:keys [output-dir cache-analysis]} opts]
-                     (when (and (true? cache-analysis) output-dir)
-                       (ana/write-analysis-cache ns-name
-                         (ana/cache-file src (ana/parse-ns src) output-dir :write)
-                         src))
-                     ret))))))))))
+             (try
+               (loop [forms       (ana/forms-seq* rdr (util/path src))
+                      ns-name     nil
+                      deps        []]
+                 (if (seq forms)
+                   (let [env (assoc env :ns (ana/get-namespace ana/*cljs-ns*))
+                         {:keys [op] :as ast} (ana/analyze env (first forms) nil opts)]
+                     (cond
+                       (= op :ns)
+                       (let [ns-name (:name ast)
+                             ns-name (if (and (= 'cljs.core ns-name)
+                                           (= "cljc" ext))
+                                       'cljs.core$macros
+                                       ns-name)]
+                         (emit ast)
+                         (recur (rest forms) ns-name (into deps (:deps ast))))
+  
+                       (= :ns* (:op ast))
+                       (let [ns-emitted? (some? ns-name)
+                             ns-name (if-not ns-emitted?
+                                       (ana/gen-user-ns src)
+                                       ns-name)]
+                         (if-not ns-emitted?
+                           (emit (assoc ast :name ns-name :op :ns))
+                           (emit ast))
+                         (recur (rest forms) ns-name (into deps (:deps ast))))
+  
+                       :else
+                       (let [ns-emitted? (some? ns-name)
+                             ns-name (if-not ns-emitted?
+                                       (ana/gen-user-ns src)
+                                       ns-name)]
+                         (when-not ns-emitted?
+                           (emit {:op :ns
+                                  :name ns-name}))
+                         (emit ast)
+                         (recur (rest forms) ns-name deps))))
+                   (let [_ (when emitter
+                             (.shutdown emitter)
+                             (.awaitTermination emitter 1000 TimeUnit/HOURS))
+                         _ (when *esm*
+                             (binding [*esm-emitting* true]
+                               (emit-esm-footer (or ns-name 'cljs.user))))
+                         dts (when *esm*
+                               (esm-dts (or ns-name 'cljs.user) @(:export-syms *esm*)))
+                         sm-data (when *source-map-data* (assoc @*source-map-data*
+                                                           :gen-col (.get ^AtomicLong *source-map-data-gen-col*)))
+                         ret (merge
+                               {:ns         (or ns-name 'cljs.user)
+                                :macros-ns  (:macros-ns opts)
+                                :provides   [ns-name]
+                                :requires   (if (= ns-name 'cljs.core)
+                                              (vec (distinct deps))
+                                              (cond-> (conj (vec (distinct deps)) 'cljs.core)
+                                                (get-in @env/*compiler* [:options :emit-constants])
+                                                (conj ana/constants-ns-sym)))
+                                :file        dest
+                                :out-file    (.toString ^File dest)
+                                :source-file src}
+                               (when sm-data
+                                 {:source-map (:source-map sm-data)})
+                               (when dts
+                                 {:esm-dts dts}))]
+                     (when (and sm-data (= :none (:optimizations opts)))
+                       (emit-source-map src dest sm-data
+                         (merge opts {:ext ext :provides [ns-name]})))
+                     (let [path (.getPath (.toURL ^File dest))]
+                       (swap! env/*compiler* assoc-in [::compiled-cljs path] ret))
+                     (ana/ensure-defs ns-name)
+                     (let [{:keys [output-dir cache-analysis]} opts]
+                       (when (and (true? cache-analysis) output-dir)
+                         (ana/write-analysis-cache ns-name
+                           (ana/cache-file src (ana/parse-ns src) output-dir :write)
+                           src))
+                       ret))))
+               (catch Throwable e
+                 ;; the forms analyzed before the failure are still queued:
+                 ;; dropped, and the one being emitted finishes, before the
+                 ;; output file is closed (they'd each fail writing to it)
+                 (when emitter
+                   (.shutdownNow ^ExecutorService emitter)
+                   (try
+                     (.awaitTermination ^ExecutorService emitter 1 TimeUnit/MINUTES)
+                     ;; the build stopping the other namespaces' compiles
+                     (catch InterruptedException _)))
+                 (throw e)))))))))
 
 #?(:clj
    (defn emit-source [src ^File dest ext opts]
@@ -2812,7 +2824,11 @@
        ;; written to a temporary file first, dev servers watching the output
        ;; directory never see a partially written module
        (let [tmp (io/file (str (.getPath dest) ".tmp"))
-             ret (emit-source* src dest tmp ext opts)
+             ret (try
+                   (emit-source* src dest tmp ext opts)
+                   (catch Throwable e
+                     (.delete tmp)
+                     (throw e)))
              dts (io/file (string/replace (.getPath dest) #"\.js$" ".d.ts"))]
          (when-not (false? (:esm-dts opts))
            (spit dts (:esm-dts ret)))
