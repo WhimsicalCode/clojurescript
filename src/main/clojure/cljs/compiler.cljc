@@ -2747,7 +2747,7 @@
                                        ns-name)]
                          (emit ast)
                          (recur (rest forms) ns-name (into deps (:deps ast))))
-  
+
                        (= :ns* (:op ast))
                        (let [ns-emitted? (some? ns-name)
                              ns-name (if-not ns-emitted?
@@ -2757,7 +2757,7 @@
                            (emit (assoc ast :name ns-name :op :ns))
                            (emit ast))
                          (recur (rest forms) ns-name (into deps (:deps ast))))
-  
+
                        :else
                        (let [ns-emitted? (some? ns-name)
                              ns-name (if-not ns-emitted?
