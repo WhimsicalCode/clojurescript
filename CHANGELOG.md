@@ -3,13 +3,13 @@
 Changes since Clojurific was forked from ClojureScript. For ClojureScript's own
 releases, see its [changelog](https://github.com/clojure/clojurescript/blob/master/changes.md).
 
-## 0.12.9 [Next]
-
-## 0.12.8 [2026-10-26]
+## 0.12.9 [2026-10-26]
 
 ### Added
 
 - The Vite plugin's `compilerOptions` object accepts camelCase keys, written as kebab-case keywords (`{ repl: { nreplPort: 0 } }` is `{:repl {:nrepl-port 0}}`). The names under `closureDefines` and `jsEntries` (defines, entries and their exports) are kept as they are. `create-clojurific`'s templates and the docs use camelCase keys.
+
+## 0.12.8 [2026-10-26]
 
 ### Changed
 
