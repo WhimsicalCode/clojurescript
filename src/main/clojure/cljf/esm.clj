@@ -628,24 +628,42 @@
                                 :column  (:column env)
                                 :output  (when-let [ns ana/*cljs-ns*] (.getPath (output-file ns opts)))}))))))
 
+(defn- source-path
+  "The path of an error's source file: a classpath resource's (i.e. a macro
+  namespace's CompilerException names it relative to the classpath) is
+  resolved to its file."
+  [file]
+  (let [path (str file)]
+    (or (when-not (.isAbsolute (io/file path))
+          (when-let [res (io/resource path)]
+            (when (= "file" (.getProtocol ^URL res))
+              (.getPath (io/file res)))))
+        path)))
+
 (defn- error-data
   "The event of a compile error: the innermost cause's message, naming the
   macro whose expansion failed, and the file, line and column of the first
-  exceptions of the cause chain with them (compile-file's names the file,
-  the analyzer's the location; parallel builds wrap them in
-  ExecutionExceptions)."
+  exception of the cause chain with a line (the analyzer's, or Clojure's
+  CompilerException in a macro namespace, which can be another file than
+  the one compiled), else the file of the first one with a file
+  (compile-file's). Parallel builds wrap them in ExecutionExceptions."
   [^Throwable e]
   (let [chain  (take-while some? (iterate ex-cause e))
         datas  (keep ex-data chain)
-        pick   (fn [& ks] (some (fn [d] (some #(get d %) ks)) datas))
-        file   (pick :file :clojure.error/source)
-        symbol (pick :clojure.error/symbol)
+        pick   (fn [ds & ks] (some (fn [d] (some #(get d %) ks)) ds))
+        ;; from the exception locating the error on: the exceptions around
+        ;; it are about the file compiled
+        inner  (or (seq (drop-while #(not (pick [%] :line :clojure.error/line)) datas)) datas)
+        loc    (take 1 inner)
+        file   (or (pick loc :file :clojure.error/source)
+                   (pick datas :file :clojure.error/source))
+        symbol (pick inner :clojure.error/symbol)
         cause  (last chain)]
     {:message (cond-> (str (or (.getMessage ^Throwable cause) (.getName (class cause))))
                 symbol (str " (expanding " symbol ")"))
-     :file    (some-> file str)
-     :line    (pick :line :clojure.error/line)
-     :column  (pick :column :clojure.error/column)}))
+     :file    (some-> file source-path)
+     :line    (pick loc :line :clojure.error/line)
+     :column  (pick loc :column :clojure.error/column)}))
 
 (defn- source-files
   "All ClojureScript and Clojure (macro) files in dirs with their

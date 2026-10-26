@@ -192,3 +192,35 @@
     (testing "the queued emits don't outlive the build, nor leave its output file behind"
       (is (empty? (remove before (filter #(.isAlive ^Thread %) (executor-threads)))))
       (is (not (.exists (io/file dir "out" "test" "bad.js.tmp")))))))
+
+(deftest errors-in-macro-namespaces-name-their-file-and-line
+  (let [dir    (temp-dir)
+        ms     (- (System/currentTimeMillis) 60000)
+        thread (Thread/currentThread)
+        loader (.getContextClassLoader thread)
+        ;; macro namespaces are required with Compiler/LOADER's class loader,
+        ;; their errors' files are resources
+        cl     (doto (clojure.lang.DynamicClassLoader. loader) (.addURL (.toURL (.toURI dir))))]
+    (push-thread-bindings {clojure.lang.Compiler/LOADER cl})
+    (.setContextClassLoader thread cl)
+    (try
+      (doseq [parallel? [false true]]
+        (testing (str ":parallel-build " parallel?)
+          ;; a namespace per build: a macro namespace is loaded once
+          (let [mac    (str "test.mac" parallel?)
+                macros (io/file dir "test" (str "mac" parallel? ".clj"))
+                _      (io/make-parents macros)
+                _      (spit macros (str "(ns " mac ")\n\n(defmacro m [] (no-such-fn))\n"))
+                uses   (write-source! dir 'test.uses (str "(ns test.uses (:require-macros [" mac "]))\n(def x (" mac "/m))") ms)
+                main   (write-source! dir 'test.umain "(ns test.umain (:require [test.uses]))" ms)
+                err    (try
+                         (binding [esm/*generated-sources* (into {} [uses main])]
+                           (esm/build {:main 'test.umain :output-dir (str (io/file dir (str "out" parallel?))) :parallel-build parallel?}))
+                         nil
+                         (catch Throwable e e))
+                data   (#'esm/error-data err)]
+            (is (= {:file (.getPath macros) :line 3} (select-keys data [:file :line])))
+            (is (not (string/includes? (:message data) "(expanding"))))))
+      (finally
+        (.setContextClassLoader thread loader)
+        (pop-thread-bindings)))))
