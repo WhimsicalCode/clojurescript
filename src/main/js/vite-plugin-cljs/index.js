@@ -15,6 +15,7 @@ import os from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { compilerCommand } from '../cljf/launcher.js';
 import { pruneChunks, propertyRenames } from './prune.js';
+import { ednValue } from './edn.js';
 
 const EVENT_PREFIX = '[cljf.esm] ';
 const NPM_AS = 'cljs-npm-as:';
@@ -124,19 +125,6 @@ function inputObject(input, root) {
   }));
 }
 
-function ednString(s) {
-  return JSON.stringify(s);
-}
-
-function ednValue(v) {
-  if (Array.isArray(v)) return `[${v.map(ednValue).join(' ')}]`;
-  if (typeof v === 'string') return v.startsWith(':') || v.startsWith("'") ? v.replace(/^'/, '') : ednString(v);
-  if (v && typeof v === 'object') {
-    return `{${Object.entries(v).map(([k, x]) => `${k.startsWith(':') ? k : ':' + k} ${ednValue(x)}`).join(' ')}}`;
-  }
-  return String(v);
-}
-
 // oxc's minifier shipped with Rolldown, as used by Vite
 function resolveFromProject(root, specifier, purpose) {
   const tryResolve = (base, spec) => {
@@ -238,7 +226,7 @@ export default module.exports;
  *   to cwd. Pages load namespaces from it, i.e. outputDir "out" serves my.app
  *   as /out/my/app.js
  * @param {object|string} [options.compilerOptions] more compiler options, an
- *   EDN string or an object with keyword keys
+ *   EDN string or an object with keyword keys, camelCase or kebab-case
  * @param {string|false} [options.manifest] writes the entry points' scripts
  *   and preloads to this file in Vite's outDir, for server rendered pages,
  *   defaults to "manifest.json"

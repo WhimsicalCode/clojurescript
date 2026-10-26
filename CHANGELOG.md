@@ -7,6 +7,10 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ## 0.12.8 [2026-10-26]
 
+### Added
+
+- The Vite plugin's `compilerOptions` object accepts camelCase keys, written as kebab-case keywords (`{ repl: { nreplPort: 0 } }` is `{:repl {:nrepl-port 0}}`). The names under `closureDefines` and `jsEntries` (defines, entries and their exports) are kept as they are. `create-clojurific`'s templates and the docs use camelCase keys.
+
 ### Changed
 
 - The Vite plugin is named `cljf` instead of `cljs`: its log lines start with `[cljf]`, and `create-clojurific`'s projects and the docs import it as `cljf` (`import cljf from 'clojurific/vite'`).

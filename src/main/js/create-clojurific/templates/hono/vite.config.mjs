@@ -10,9 +10,9 @@ export default {
     cljf({
       outputDir: 'target/cljs',
       compilerOptions: {
-        'js-entries': { server: { exports: { default: "'{{ns}}/app" } } },
+        jsEntries: { server: { exports: { default: "'{{ns}}/app" } } },
         // the dev server starts an nREPL server, its port in .nrepl-port
-        repl: { 'nrepl-port': 0 },
+        repl: { nreplPort: 0 },
       },
       // the dev server runs the backend once compiled, not on its first
       // request: the REPL evaluates in it

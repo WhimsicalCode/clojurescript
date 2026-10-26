@@ -5,7 +5,7 @@ export default {
     cljf({
       outputDir: 'target/cljs',
       // the dev server starts an nREPL server, its port in .nrepl-port
-      compilerOptions: { repl: { 'nrepl-port': 0 } },
+      compilerOptions: { repl: { nreplPort: 0 } },
     }),
   ],
 };

@@ -15,7 +15,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-node --test 'src/main/js/cljf/test/*.test.js' 'src/main/js/create-clojurific/test/*.test.js'
+node --test 'src/main/js/cljf/test/*.test.js' 'src/main/js/vite-plugin-cljs/test/*.test.js' 'src/main/js/create-clojurific/test/*.test.js'
 
 script/package-npm
 version=$(node -p "require('./builds/npm/package.json').version")

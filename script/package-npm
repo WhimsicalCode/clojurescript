@@ -19,7 +19,7 @@ rm -rf "$out"
 mkdir -p "$out"
 
 cp -R src/main/js/. "$out"
-rm -rf "$out/cljf/test" "$out/cljf/resolver/.cpcache" "$out/create-clojurific"
+rm -rf "$out/cljf/test" "$out/vite-plugin-cljs/test" "$out/cljf/resolver/.cpcache" "$out/create-clojurific"
 cp -R no-clojurescript "$out/"
 cp epl-v10.html "$out/LICENSE.html"
 

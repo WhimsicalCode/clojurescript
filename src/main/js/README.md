@@ -58,7 +58,7 @@ npx cljf repl
 
 `cljf repl` is a ClojureScript REPL evaluating in the pages the dev server
 runs, through its nREPL server: `cljf({ outputDir: 'target/cljs',
-compilerOptions: { repl: { 'nrepl-port': 0 } } })` with `nrepl/nrepl` in
+compilerOptions: { repl: { nreplPort: 0 } } })` with `nrepl/nrepl` in
 `deps.edn`.
 
 `cljf` resolves `deps.edn` with tools.deps, adds the compiler, and removes

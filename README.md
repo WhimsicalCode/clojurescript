@@ -172,7 +172,7 @@ export default {
 | `cwd` | the compiler's working directory, with the project's `deps.edn`, defaults to Vite's root |
 | `config` | compiler options file (EDN, see [Compiling](#compiling)), relative to `cwd` |
 | `profile` | the config file's profile, defaults to `dev` when serving and `release` when building |
-| `compilerOptions` | more compiler options, an EDN string or an object with keyword keys, e.g. `{ 'npm-interop': ':shadow' }` |
+| `compilerOptions` | more compiler options, an EDN string or an object, e.g. `{ npmInterop: ':shadow' }`: keys are keywords, camelCase ones in kebab-case (`nreplPort` is `:nrepl-port`), except the names under `closureDefines` and `jsEntries`; strings starting with `:` are keywords, with `'` symbols |
 | `entries` | the `:js-entries` a build bundles, defaults to all |
 | `ssrEntries` | `:js-entries` the dev server runs in its ssr environment once they're compiled |
 | `manifest` | the file in Vite's `outDir` the entry points' scripts and preloads are written to, for server rendered pages, defaults to `'manifest.json'`; `false` doesn't write it |
@@ -213,8 +213,8 @@ export default {
     cljf({
       outputDir: 'target/cljs',
       compilerOptions: {
-        'js-entries': { server: { exports: { default: "'my.server/app" } } },
-        repl: { 'nrepl-port': 0 },
+        jsEntries: { server: { exports: { default: "'my.server/app" } } },
+        repl: { nreplPort: 0 },
       },
       ssrEntries: ['server'],
       manifest: false,
@@ -267,7 +267,7 @@ Class data sharing (CDS) archives would load Clojure's classes faster, but the J
 (repl/repl)                ; this nREPL session evaluates ClojureScript, :cljs/quit to leave
 ```
 
-`cljf repl` is that REPL in a terminal (`npm run repl` in `create-clojurific`'s projects). It's an nREPL client, without Java, of the server whose port is in `.nrepl-port` (or `--port`), and waits for the dev server to write it. It switches its session with `(repl/repl)`, reads forms over several lines until they're closed, keeps a history in `.cljf/repl-history`, and interrupts the evaluation on Ctrl-C. The Vite plugin's projects start the server with `compilerOptions: { repl: { 'nrepl-port': 0 } }` and `nrepl/nrepl` in `deps.edn`.
+`cljf repl` is that REPL in a terminal (`npm run repl` in `create-clojurific`'s projects). It's an nREPL client, without Java, of the server whose port is in `.nrepl-port` (or `--port`), and waits for the dev server to write it. It switches its session with `(repl/repl)`, reads forms over several lines until they're closed, keeps a history in `.cljf/repl-history`, and interrupts the evaluation on Ctrl-C. The Vite plugin's projects start the server with `compilerOptions: { repl: { nreplPort: 0 } }` and `nrepl/nrepl` in `deps.edn`.
 
 - Forms are analyzed with the build's compiler environment and evaluated in the runtime focused last (visible ones first) unless `:runtime-id` or `:tag` pick one. The interactive REPL notes changes of its runtime.
 - `def` redefines a namespace's var for the namespace's own code and its importers, as a hot reload does. Vars only defined at the REPL, and namespaces only created at the REPL (`in-ns`, `ns`), are the runtime's.
@@ -292,7 +292,7 @@ import cljf from 'clojurific/vite';
 
 export default {
   plugins: [cljf({ config: 'cljs.edn', outputDir: 'target/cljs',
-                   compilerOptions: { 'npm-interop': ':shadow' } })],
+                   compilerOptions: { npmInterop: ':shadow' } })],
 };
 ```
 
