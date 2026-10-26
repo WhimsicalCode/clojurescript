@@ -22,7 +22,7 @@
             [clojure.string :as string])
   (:import [java.io File]
            [java.net URL]
-           [java.util.concurrent Executors Future LinkedBlockingQueue]
+           [java.util.concurrent ExecutionException Executors Future LinkedBlockingQueue TimeUnit]
            [java.util.concurrent.locks ReentrantLock]))
 
 (def default-opts
@@ -387,10 +387,22 @@
                        (doseq [^Future d deps] (.get d))
                        (compile-ns input opts)))]
           (swap! futures assoc ns f)))
-      (doseq [^Future f (vals @futures)]
-        (.get f))
+      (doseq [{:keys [ns]} inputs]
+        (.get ^Future (get @futures ns)))
+      (catch ExecutionException e
+        ;; the namespace's failure, not the futures waiting for it
+        (throw (loop [^Throwable e e]
+                 (if (and (instance? ExecutionException e) (ex-cause e))
+                   (recur (ex-cause e))
+                   e))))
       (finally
-        (.shutdown pool)))))
+        ;; after a failure, the namespaces not requiring the failed one are
+        ;; compiled still (i.e. recompiled for a changed api, *api-changed*
+        ;; doesn't outlive the build), the ones requiring it fail getting
+        ;; it, and all of them finish before the build returns, i.e. before
+        ;; the watcher's next build
+        (.shutdown pool)
+        (.awaitTermination pool 1 TimeUnit/HOURS)))))
 
 (defn- ensure-analyzed!
   "Namespaces up to date aren't recompiled, nor analyzed. Reads their
@@ -592,7 +604,15 @@
   [type m]
   (let [^java.io.Writer out @stdout]
     (locking out
-      (.write out (str "[cljf.esm] " (json/write-str (assoc m :type type)) "\n"))
+      (.write out (str "[cljf.esm] "
+                    ;; i.e. a File in ex-data: printed rather than failing
+                    (json/write-str (assoc m :type type)
+                      :value-fn (fn [_ v]
+                                  (if (or (nil? v) (string? v) (number? v) (boolean? v)
+                                          (keyword? v) (symbol? v) (map? v) (coll? v))
+                                    v
+                                    (str v))))
+                    "\n"))
       (.flush out))))
 
 (defn- collecting-warnings
@@ -610,13 +630,42 @@
                                 :column  (:column env)
                                 :output  (when-let [ns ana/*cljs-ns*] (.getPath (output-file ns opts)))}))))))
 
-(defn- error-data [^Throwable e]
-  (let [data  (ex-data (or (ex-cause e) e))
-        cause (loop [e e] (if-let [c (ex-cause e)] (recur c) e))]
-    {:message (.getMessage cause)
-     :file    (or (:file data) (:clojure.error/source data))
-     :line    (or (:line data) (:clojure.error/line data))
-     :column  (or (:column data) (:clojure.error/column data))}))
+(defn- source-path
+  "The path of an error's source file: a classpath resource's (i.e. a macro
+  namespace's CompilerException names it relative to the classpath) is
+  resolved to its file."
+  [file]
+  (let [path (str file)]
+    (or (when-not (.isAbsolute (io/file path))
+          (when-let [res (io/resource path)]
+            (when (= "file" (.getProtocol ^URL res))
+              (.getPath (io/file res)))))
+        path)))
+
+(defn- error-data
+  "The event of a compile error: the innermost cause's message, naming the
+  macro whose expansion failed, and the file, line and column of the first
+  exception of the cause chain with a line (the analyzer's, or Clojure's
+  CompilerException in a macro namespace, which can be another file than
+  the one compiled), else the file of the first one with a file
+  (compile-file's). Parallel builds wrap them in ExecutionExceptions."
+  [^Throwable e]
+  (let [chain  (take-while some? (iterate ex-cause e))
+        datas  (keep ex-data chain)
+        pick   (fn [ds & ks] (some (fn [d] (some #(get d %) ks)) ds))
+        ;; from the exception locating the error on: the exceptions around
+        ;; it are about the file compiled
+        inner  (or (seq (drop-while #(not (pick [%] :line :clojure.error/line)) datas)) datas)
+        loc    (take 1 inner)
+        file   (or (pick loc :file :clojure.error/source)
+                   (pick datas :file :clojure.error/source))
+        symbol (pick inner :clojure.error/symbol)
+        cause  (last chain)]
+    {:message (cond-> (str (or (.getMessage ^Throwable cause) (.getName (class cause))))
+                symbol (str " (expanding " symbol ")"))
+     :file    (some-> file source-path)
+     :line    (pick loc :line :clojure.error/line)
+     :column  (pick loc :column :clojure.error/column)}))
 
 (defn- source-files
   "All ClojureScript and Clojure (macro) files in dirs with their

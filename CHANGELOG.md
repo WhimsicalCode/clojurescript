@@ -9,6 +9,10 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 - The Vite plugin is named `cljf` instead of `cljs`: its log lines start with `[cljf]`, and `create-clojurific`'s projects and the docs import it as `cljf` (`import cljf from 'clojurific/vite'`).
 
+### Fixed
+
+- `:parallel-build` compile errors name their file, line, column and the macro whose expansion failed instead of only the innermost message, the watcher no longer stops (and stops recompiling) when an error's data can't be written as JSON, and a failed namespace's queued emits no longer print a `Stream closed` trace each nor keep the JVM from exiting.
+
 ## 0.12.7 [2026-10-11]
 
 ### Added
