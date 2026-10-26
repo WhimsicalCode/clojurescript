@@ -80,7 +80,7 @@ Clojurific's intent is to optimize ClojureScript for the specific needs of Whims
 Clojure deps.edn, from [Clojars](https://clojars.org/com.whimsical/clojurific):
 
 ```clojure
-com.whimsical/clojurific {:mvn/version "0.12.7"}
+com.whimsical/clojurific {:mvn/version "0.12.8"}
 ```
 
 Clojurific is based on ClojureScript 1.12.145, and replaces it: stock ClojureScript has the same namespaces, so it mustn't be on the classpath too. The `cljf` launcher (and the Vite plugin, which runs it) removes it for you; with the Clojure CLI, exclude it from the library that brings it in with `:exclusions [org.clojure/clojurescript]`, or from the whole dependency tree with an alias overriding it with the empty project in `no-clojurescript/`:
