@@ -535,27 +535,72 @@
 
 ;; Loading a macro namespace (Clojure) holds the analyzer's load-mutex, the
 ;; namespaces using it wait meanwhile.
-(defn- preload-macro-namespaces
-  "Under :parallel-build, starts loading the macro namespaces the inputs
-  require in a thread, in dependency order, while cljs.core is compiled:
-  the namespaces compiled after it would otherwise wait for each other's
-  first loads, one at a time. Load failures are left to the namespaces
-  requiring them. Returns the thread's Future."
-  [inputs]
-  (let [nses (into []
-               (comp (mapcat (fn [{:keys [ast]}]
-                               (concat (vals (:require-macros ast)) (vals (:use-macros ast)))))
-                     (distinct))
-               inputs)
-        pool (Executors/newSingleThreadExecutor)]
+(def ^:private ^:dynamic *macro-key*
+  "Under :aot-macros, the key of the Clojure sources (macro-cache-key)."
+  nil)
+
+(defn- macro-order-file ^File [{:keys [output-dir]}]
+  (io/file output-dir "cljs-esm-macro-order.edn"))
+
+(defn- previous-macro-order
+  "The macro namespaces the previous build into the output directory loaded,
+  in its order, if it had the same Clojure sources (*macro-key*): the order
+  of a build's own, valid for these sources. nil otherwise."
+  [opts]
+  (when-let [key *macro-key*]
+    (let [f (macro-order-file opts)]
+      (when (.exists f)
+        (try
+          (let [{stored :key :keys [nses]} (edn/read-string (slurp f))]
+            (when (= key stored) nses))
+          (catch Exception _ nil))))))
+
+(defn- store-macro-order! [opts nses]
+  (when-let [key *macro-key*]
     (try
-      (.submit pool
-        ^Callable
-        (bound-fn []
-          (doseq [ns nses]
-            (try
-              (ana/require-macros-ns ns nil)
-              (catch Throwable _)))))
+      (spit-if-changed (macro-order-file opts) (pr-str {:key key :nses (vec nses)}))
+      ;; an optimization
+      (catch Exception _))))
+
+(defn- build-macro-order
+  "The macro namespaces the inputs require, in dependency order."
+  [inputs]
+  (into []
+    (comp (mapcat (fn [{:keys [ast]}]
+                    (concat (vals (:require-macros ast)) (vals (:use-macros ast)))))
+          (distinct))
+    inputs))
+
+(defn- preload-macro-namespaces
+  "Under :parallel-build, starts loading macro namespaces in a thread, one at
+  a time: the namespaces compiled after cljs.core would otherwise wait for
+  each other's first loads. Loads head first, the order a previous build
+  with the same Clojure sources loaded (so while this one's namespaces are
+  found), then the namespaces given to the returned fn (the build's own, in
+  dependency order, those loaded already are skipped), nil ending the
+  queue. Macro namespaces' load order matters (sci.impl.copy-vars resolves
+  cljs.analyzer.api at load time), so only a build's order is used. Load
+  failures are left to the namespaces requiring them. Returns [add! future]."
+  [head]
+  (let [queue (LinkedBlockingQueue.)
+        end   (Object.)
+        pool  (Executors/newSingleThreadExecutor)]
+    (doseq [ns head] (.put queue ns))
+    (try
+      [(fn [nses]
+         (if nses
+           (doseq [ns nses] (.put queue ns))
+           (.put queue end)))
+       (.submit pool
+         ^Callable
+         (bound-fn []
+           (loop []
+             (let [ns (.take queue)]
+               (when-not (identical? end ns)
+                 (try
+                   (ana/require-macros-ns ns nil)
+                   (catch Throwable _))
+                 (recur))))))]
       (finally
         (.shutdown pool)))))
 
@@ -770,9 +815,10 @@
       (try
         (let [;; and the loader require uses while one is bound, i.e. when
               ;; building from a REPL or a script (clojure -i)
-              f   #(if (.isBound clojure.lang.Compiler/LOADER)
-                     (with-bindings {clojure.lang.Compiler/LOADER dcl} (f))
-                     (f))
+              f   #(binding [*macro-key* key]
+                     (if (.isBound clojure.lang.Compiler/LOADER)
+                       (with-bindings {clojure.lang.Compiler/LOADER dcl} (f))
+                       (f)))
               ret (if ready?
                     (f)
                     (binding [*compile-files* true
@@ -823,14 +869,24 @@
        (env/with-compiler-env compiler-env
          (swap! compiler-env assoc :options opts)
          (let [start  (System/nanoTime)
-               inputs (find-sources (mains opts) opts)]
+               [preload-add! preload] (when (:parallel-build opts)
+                                        (preload-macro-namespaces (previous-macro-order opts)))
+               inputs (try
+                        (find-sources (mains opts) opts)
+                        (catch Throwable e
+                          ;; ends the preloader
+                          (when preload-add! (preload-add! nil))
+                          (throw e)))]
            ;; lets the compiler know which namespaces are part of the build
            ;; before they're analyzed
            (swap! compiler-env assoc ::namespaces (into #{} (map :ns) inputs))
            (swap! compiler-env update ::ana/data-readers merge (ana/load-data-readers))
            (write-build-info opts)
-           (let [preload (when (:parallel-build opts)
-                           (preload-macro-namespaces inputs))]
+           (let [order (build-macro-order inputs)]
+             (when preload-add!
+               (preload-add! order)
+               (preload-add! nil))
+             (store-macro-order! opts order)
              ;; cljs.core is analyzed first, the compiler expects its analysis
              ;; to be available when compiling anything else
              (compile-ns (first (filter #(= 'cljs.core (:ns %)) inputs)) opts)
