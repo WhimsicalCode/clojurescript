@@ -17,7 +17,8 @@
   versions, and the compiler's Clojure sources (their paths, modification
   times and sizes): a run with another key compiles them again.
   CLJF_COMPILER_CLASSES=false loads the sources."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as string])
   (:import [clojure.lang DynamicClassLoader]
            [java.io File]
@@ -65,6 +66,24 @@
         (add! (.getPath root) (.lastModified root) (.length root))))
     (apply str (map #(format "%02x" %) (.digest md)))))
 
+(defn- store-goog-dependencies!
+  "Writes the Closure Library's dependency index (cljs.js-deps/
+  goog-dependencies, read from goog/deps.js and the library's files) to dir:
+  it depends on the classpath only, which the key covers."
+  [dir]
+  (spit (io/file dir "goog-dependencies.edn")
+    (pr-str ((requiring-resolve 'cljs.js-deps/goog-dependencies*)))))
+
+(defn- load-goog-dependencies!
+  "Makes cljs.js-deps/goog-dependencies return the index stored in dir, if
+  any, instead of reading the Closure Library's files again."
+  [dir]
+  (let [f (io/file dir "goog-dependencies.edn")]
+    (when (.exists f)
+      (let [deps (edn/read-string (slurp f))]
+        (alter-var-root (requiring-resolve 'cljs.js-deps/goog-dependencies)
+          (constantly (fn [] deps)))))))
+
 (defn- load-compiler!
   "Loads the compiler (cljf.esm and cljs.core's macros) from its classes in
   the cache, compiling them there first if they aren't."
@@ -84,13 +103,15 @@
         (.addURL dcl (.toURL (.toURI dir)))
         ;; threads started from now on inherit it
         (.setContextClassLoader thread dcl)
-        (require 'cljf.esm))
+        (require 'cljf.esm)
+        (load-goog-dependencies! dir))
       (let [tmp (io/file (str dir ".tmp-" (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime)))]
         (.mkdirs tmp)
         (binding [*compile-files* true
                   *compile-path*  (.getPath tmp)]
           (require 'cljf.esm)
           (core))
+        (store-goog-dependencies! tmp)
         (spit (io/file tmp ".complete") "")
         (try
           (Files/move (.toPath tmp) (.toPath dir) (into-array [StandardCopyOption/ATOMIC_MOVE]))
