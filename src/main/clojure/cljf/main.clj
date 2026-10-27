@@ -340,7 +340,12 @@
          used    (fn [^File dir]
                    (let [done (io/file dir ".complete")]
                      (if (.exists done) (.lastModified done) (.lastModified dir))))
-         dirs    (filter #(.isDirectory ^File %) (.listFiles root))
+         ;; entries are directories the compiler made: a symlink (to a
+         ;; directory) is never one, deleting through it would delete
+         ;; outside the cache
+         dirs    (filter #(and (.isDirectory ^File %)
+                               (not (Files/isSymbolicLink (.toPath ^File %))))
+                   (.listFiles root))
          tmp?    #(string/includes? (.getName ^File %) ".tmp-")
          entries (sort-by (comp - used) (remove tmp? dirs))
          stale   (concat
