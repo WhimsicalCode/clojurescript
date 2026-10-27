@@ -558,8 +558,12 @@
                            ci (index ana/*cljs-ns*)
                            ^java.util.concurrent.CountDownLatch l (compiled target)]
                        ;; only namespaces before the current one, which a
-                       ;; sequential build compiled already: never a cycle
-                       (when (and ti ci (< (long ti) (long ci)) (pos? (.getCount l)))
+                       ;; sequential build compiled already: never a cycle.
+                       ;; Not while holding the analyzer's load lock (a macro
+                       ;; namespace's top level resolving while it loads):
+                       ;; the awaited namespace's compile may need the lock
+                       (when (and ti ci (< (long ti) (long ci)) (pos? (.getCount l))
+                                  (not (Thread/holdsLock ana/load-mutex)))
                          ;; another thread compiles meanwhile, the waiting one
                          ;; holds a pool thread
                          (locking pool
