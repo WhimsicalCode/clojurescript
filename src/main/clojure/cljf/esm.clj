@@ -1209,7 +1209,12 @@
                                  (try
                                    (if-not @built?
                                      (build!)
-                                     (recompile-changes! files nses))
+                                     ;; lookups of sources and their ns forms cached
+                                     ;; for the recompile, not across them: files
+                                     ;; may be added or removed in between
+                                     (binding [util/*ns-source-cache* (java.util.concurrent.ConcurrentHashMap.)
+                                               ana/*parse-ns-cache*  (java.util.concurrent.ConcurrentHashMap.)]
+                                       (recompile-changes! files nses)))
                                    (catch Throwable e
                                      (doto (assoc (error-data e) :type "error")
                                        (->> (event! "error")))))))))))]
