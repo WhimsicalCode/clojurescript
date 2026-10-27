@@ -485,7 +485,7 @@
           ((requiring-resolve 'cljf.main/prune!) (.getParentFile dir))
           ;; another build stored it meanwhile, or the cache isn't writable
           (catch Exception _
-            (doseq [^File f (reverse (file-seq tmp))] (.delete f))))))))
+            ((requiring-resolve 'cljf.main/delete-tree!) tmp)))))))
 
 (defn- compile-ns
   "Compiles a namespace if its output isn't up to date, or when a namespace
@@ -961,7 +961,7 @@
           (.setContextClassLoader thread loader)
           ;; a failed build's, or one another build stored meanwhile
           (when (and tmp (.exists tmp))
-            (doseq [^File x (reverse (file-seq tmp))] (.delete x)))
+            ((requiring-resolve 'cljf.main/delete-tree!) tmp))
           ((requiring-resolve 'cljf.main/prune!) root))))))
 
 (defn build

@@ -28,6 +28,27 @@
            [java.nio.file Files StandardCopyOption]
            [java.security MessageDigest]))
 
+(defn delete-tree!
+  "Deletes file or directory f with everything in it, never following
+  symlinks: a symlink is deleted as a link, its target stays. Best effort,
+  for cache entries: files it can't delete are left."
+  [^File f]
+  (let [p (.toPath f)]
+    (when (java.nio.file.Files/exists p (into-array java.nio.file.LinkOption [java.nio.file.LinkOption/NOFOLLOW_LINKS]))
+      (try
+        (Files/walkFileTree p
+          (proxy [java.nio.file.SimpleFileVisitor] []
+            (visitFile [file _attrs]
+              (try (Files/delete file) (catch java.io.IOException _))
+              java.nio.file.FileVisitResult/CONTINUE)
+            (visitFileFailed [file _e]
+              (try (Files/delete file) (catch java.io.IOException _))
+              java.nio.file.FileVisitResult/CONTINUE)
+            (postVisitDirectory [dir _e]
+              (try (Files/delete dir) (catch java.io.IOException _))
+              java.nio.file.FileVisitResult/CONTINUE)))
+        (catch java.io.IOException _)))))
+
 (defn cache-dir
   "Directory name of the per-user cache, see the namespace doc."
   ^File [name]
@@ -299,7 +320,7 @@
           (hold! dir)
           ;; another run compiled them meanwhile
           (catch java.io.IOException _
-            (doseq [^File f (reverse (file-seq tmp))] (.delete f))))))))
+            (delete-tree! tmp)))))))
 
 (def ^:private holder
   (delay
@@ -363,9 +384,8 @@
                                                    (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime)))]
                                   (if (.renameTo dir t)
                                     t
-                                    (do (.delete (io/file dir ".complete")) dir))))]
-             ^File f (reverse (file-seq gone))]
-       (.delete f)))))
+                                    (do (.delete (io/file dir ".complete")) dir))))]]
+       (delete-tree! gone)))))
 
 (defn -main
   "Usage: clojure -M -m cljf.main [build|watch] options..., see cljf.esm/-main."
