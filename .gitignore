@@ -37,3 +37,7 @@ resources/brepl_client.js
 !src/main/js/package.json
 !src/main/js/create-clojurific/package.json
 !src/main/js/create-clojurific/templates/*/package.json
+
+# the native prune summarizer: built by script/build-native-prune
+src/main/rust/prune/target
+src/main/js/vite-plugin-cljs/native

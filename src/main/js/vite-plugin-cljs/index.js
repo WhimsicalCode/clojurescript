@@ -148,10 +148,61 @@ async function loadFromProject(root, specifier, purpose) {
   return import(pathToFileURL(resolveFromProject(root, specifier, purpose)).href);
 }
 
-// Statement summaries of chunks for pruning (prune.js), parsed with oxc's
-// parser (shipped with Rolldown, at oxcPath) in worker threads, the largest
-// chunks first.
+// The native summarizer (src/main/rust/prune, script/build-native-prune) for
+// this platform, null without one.
+function loadNativePrune() {
+  const file = new URL(`./native/cljf-prune.${process.platform}-${process.arch}.node`, import.meta.url);
+  if (process.env.CLJF_NATIVE_PRUNE === 'false' || !existsSync(file)) return null;
+  try {
+    return createRequire(import.meta.url)(file.pathname);
+  } catch (e) {
+    return null;
+  }
+}
+
+// The native summaries (string table, statements as u32s) as prune.js'.
+function decodeSummary({ strings, statements: a }) {
+  const kinds = ['root', 'decl', 'prop'];
+  const out = [];
+  let i = 0;
+  const list = () => {
+    const n = a[i++];
+    const r = new Array(n);
+    for (let k = 0; k < n; k++) r[k] = strings[a[i++]];
+    return r;
+  };
+  while (i < a.length) {
+    const s = { start: a[i++], end: a[i++], kind: kinds[a[i++]] };
+    const object = a[i++], prop = a[i++];
+    const names = list();
+    if (s.kind === 'prop') {
+      s.object = strings[object];
+      s.prop = prop === 0xFFFFFFFF ? null : strings[prop];
+    }
+    if (s.kind === 'decl') s.names = names;
+    s.ids = list();
+    s.props = list();
+    out.push(s);
+  }
+  return out;
+}
+
+// Statement summaries of chunks for pruning (prune.js): by the native
+// summarizer if there's one for this platform (and it supports the chunk),
+// else parsed with oxc's parser (shipped with Rolldown, at oxcPath) in
+// worker threads, the largest chunks first.
 async function summarizeChunks(oxcPath, chunks) {
+  const native = loadNativePrune();
+  const summaries = native ? native.summarizeChunks(chunks.map(c => c.code)).map(s => s && decodeSummary(s)) : [];
+  const rest = chunks.map((c, i) => i).filter(i => !summaries[i]);
+  if (rest.length) {
+    const results = await summarizeChunksJS(oxcPath, rest.map(i => chunks[i]));
+    rest.forEach((i, k) => (summaries[i] = results[k]));
+  }
+  return summaries;
+}
+
+async function summarizeChunksJS(oxcPath, chunks) {
   const order = chunks.map((c, i) => i).sort((a, b) => chunks[b].code.length - chunks[a].code.length);
   const results = new Array(chunks.length);
   const size = Math.min(chunks.length, os.availableParallelism());
