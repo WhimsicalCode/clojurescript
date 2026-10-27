@@ -292,7 +292,7 @@ The launcher and the Vite plugin start the compiler with `cljf.main`, `cljf.esm`
 Editors connect to the nREPL server in `.nrepl-port`, then evaluate `(cljf.esm.repl/repl)` in a session to switch it to ClojureScript. For CIDER, add `cider/cider-nrepl` to `deps.edn` and its middleware to the server, in the Vite plugin's options, in `cljs.edn`, or in nREPL's configuration: the project's `.nrepl.edn` (`{:middleware [cider.nrepl/cider-middleware]}`), whose keys replace those of the user's `nrepl.edn` (`~/.nrepl/nrepl.edn`, or under `$NREPL_CONFIG_DIR` or `$XDG_CONFIG_HOME/nrepl`). Only their `:middleware` applies:
 
 ```js
-compilerOptions: { repl: { nreplPort: 0, middleware: ['cider.nrepl/cider-middleware'] } }
+compilerOptions: { repl: { nreplPort: 0, middleware: ["'cider.nrepl/cider-middleware"] } }
 ```
 
 ```clojure

@@ -68,7 +68,7 @@ printf '(ns smoke.core)\n(println "smoke" (+ 1 2))\n' > "$project/src/smoke/core
     "  plugins: [cljf({ outputDir: 'target/cljs', ignoreWarnings: command === 'serve', compilerOptions: {" \
     "    buildHooks: [[\"'my.build/hook\", { outputTo: 'out.css' }]]," \
     "    closureDefines: { 'goog.DEBUG': true }," \
-    "    ...(command === 'serve' && { repl: { nreplPort: 0, middleware: ['cider.nrepl/cider-middleware'] } }) } })]," \
+    "    ...(command === 'serve' && { repl: { nreplPort: 0, middleware: [\"'cider.nrepl/cider-middleware\"] } }) } })]," \
     "}));" > vite.config.ts
   npx tsc -p .
   printf '%s\n' "import cljf from 'clojurific/vite';" "cljf({ outputDir: 'out', prune: 'yes' });" > vite.config.ts

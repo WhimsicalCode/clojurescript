@@ -62,9 +62,9 @@ export interface CompilerOptions {
   watchDirs?: string[];
   /**
    * The dev server's nREPL server: `{ nreplPort: 0 }` picks a free port, written to the port files.
-   * `middleware` adds nREPL middleware, by var name: `['cider.nrepl/cider-middleware']`.
+   * `middleware` adds nREPL middleware, by var name: `["'cider.nrepl/cider-middleware"]`.
    */
-  repl?: false | { nreplPort?: number; nreplHost?: string; portFiles?: string[]; middleware?: string[] };
+  repl?: false | { nreplPort?: number; nreplHost?: string; portFiles?: string[]; middleware?: CljSymbol[] };
   /** A generated test runner requiring the test namespaces. */
   testRunner?: { ns: CljSymbol; nsRegexp?: string; runner: CljSymbol };
   [option: string]: EdnValue | undefined;
