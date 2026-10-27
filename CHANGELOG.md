@@ -5,6 +5,10 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ## 0.12.12 [Next]
 
+### Fixed
+
+- The Vite plugin's `compilerOptions` object writes `null` as `nil` and leaves out keys whose value is `undefined`, instead of writing them as the (truthy) symbols `null` and `undefined`: `repl: dev ? { nreplPort: 0 } : undefined` no longer sets `:repl`, and a `null` define no longer counts as set.
+
 ## 0.12.11 [2026-10-27]
 
 ### Added

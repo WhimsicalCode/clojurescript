@@ -13,7 +13,17 @@ test('keys are keywords, camelCase written in kebab-case', () => {
 test('strings are strings, keywords with : and symbols with \'', () => {
   assert.equal(ednValue({ buildHooks: [["'my.build/hook", { outputTo: 'out/a.css', mode: ':dev' }]] }),
     '{:build-hooks [[my.build/hook {:output-to "out/a.css" :mode :dev}]]}');
-  assert.equal(ednValue(['a "quote"', null, false, 1.5]), '["a \\"quote\\"" null false 1.5]');
+  assert.equal(ednValue(['a "quote"', null, false, 1.5]), '["a \\"quote\\"" nil false 1.5]');
+});
+
+test('null is nil, map keys whose value is undefined are left out', () => {
+  assert.equal(ednValue({ repl: undefined, prune: true }), '{:prune true}');
+  assert.equal(ednValue({ closureDefines: { 'goog.DEBUG': null, 'my.app/x': undefined } }),
+    '{:closure-defines {:goog.DEBUG nil}}');
+  assert.equal(ednValue({ buildHooks: [["'my.build/hook", null, undefined]] }),
+    '{:build-hooks [[my.build/hook nil nil]]}');
+  assert.equal(ednValue(null), 'nil');
+  assert.equal(ednValue({ ...(false && { repl: { nreplPort: 0 } }) }), '{}');
 });
 
 test('names are written as they are', () => {
