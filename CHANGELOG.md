@@ -23,7 +23,10 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ### Fixed
 
-- The dev server didn't run its `ssrEntries` while any namespace had a compiler warning, a browser namespace's too: a server entry never started, with one line in the terminal and no page to show the overlay on. The entries run once compiled regardless, and the page a server serves shows the warnings.
+- The dev server didn't run its `ssrEntries` while any namespace had a compiler warning, a browser namespace's too: a server entry never started, with one line in the terminal and no page to show the overlay on. The entries run once compiled regardless; the HTML pages a server serves (those loading `@vite/client`) show the warnings' overlay, other responses don't.
+- The dev server's hot reload stayed paused for good by the warnings of a namespace removed from the build, or raised outside the namespaces compiled (i.e. in `cljs.user`): the watcher's compiled events report the build's outstanding warnings (`outstanding`), which the plugin holds back hot updates by.
+- The output held back by warnings was released only in the dev server's client environment: a server entry (the ssr environment) kept the old code once they were fixed. It's released in every environment, and the plugin compares the compiler's paths with Vite's on Windows too.
+- The dev server ran its `ssrEntries` once per compile without waiting for the previous run: quick compiles could import an entry twice. The runs are one at a time.
 - The Vite plugin's `compilerOptions` object writes `null` as `nil` and leaves out keys whose value is `undefined`, instead of writing them as the (truthy) symbols `null` and `undefined`: `repl: dev ? { nreplPort: 0 } : undefined` no longer sets `:repl`, and a `null` define no longer counts as set.
 - Namespaces compiled against an analysis read from the analysis cache emit the same code as against a fresh one: the cache keeps the metadata of vars' arglists (i.e. `{:pre ...}`, which sci's `copy-var` copies) and the reader's Integer source positions, which it turned into Longs (emitted in parens).
 

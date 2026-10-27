@@ -1105,6 +1105,22 @@
                                 :column  (:column env)
                                 :output  (when-let [ns ana/*cljs-ns*] (.getPath (output-file ns opts)))}))))))
 
+(defn- outstanding-warnings
+  "The warnings outstanding after a compile, kept the {path [warning]} of
+  the output files before it, event the compiled event (:files compiled,
+  their :warnings), outputs the output files of the build's namespaces.
+  Returns [kept outstanding]: the files compiled have the compile's
+  warnings, and only the build's namespaces have any (a namespace removed
+  from the build has none). outstanding is kept's warnings and the
+  compile's of no namespace in the build (i.e. raised in cljs.user), which
+  are reported once."
+  [kept {:keys [files warnings]} outputs]
+  (let [built? #(contains? outputs (:output %))
+        kept   (reduce (fn [m w] (update m (:output w) (fnil conj []) w))
+                 (select-keys (apply dissoc kept files) outputs)
+                 (filter built? warnings))]
+    [kept (into (vec (mapcat val (sort-by key kept))) (remove built? warnings))]))
+
 (defn- source-path
   "The path of an error's source file: a classpath resource's (i.e. a macro
   namespace's CompilerException names it relative to the classpath) is
@@ -1378,13 +1394,16 @@
         ;; REPL compiled (load-file) isn't compiled again when the editor's
         ;; save is reported
         compiled-    (atom {})
-        ;; the warnings of the output files, {path [warning]}: like the Vite
-        ;; plugin, which holds back hot reloads while there are any
+        ;; the warnings of the output files, {path [warning]}: compiled
+        ;; events report them as :outstanding, the Vite plugin holds back hot
+        ;; reloads while there are any
         warnings-    (atom {})
-        outstanding! (fn [{:keys [files warnings]}]
-                       (swap! warnings-
-                         #(reduce (fn [m w] (update m (:output w) (fnil conj []) w))
-                            (apply dissoc % files) warnings)))
+        outstanding! (fn [event inputs]
+                       (let [outputs (into #{} (map #(.getPath (output-file (:ns %) opts))) inputs)
+                             [kept outstanding] (outstanding-warnings @warnings- event outputs)]
+                         (reset! warnings- kept)
+                         (doto (assoc event :outstanding outstanding)
+                           (->> (event! "compiled")))))
         build!       (fn []
                        (let [start    (System/nanoTime)
                              warnings (atom [])
@@ -1399,12 +1418,11 @@
                          (reset! inputs-mains- (vec (mains opts)))
                          (reset! built? true)
                          (reset! warnings- {})
-                         (doto {:type       "compiled"
-                                :namespaces (count nses)
-                                :warnings   @warnings
-                                :ms         (long (/ (- (System/nanoTime) start) 1e6))}
-                           outstanding!
-                           (->> (event! "compiled")))))
+                         (outstanding! {:type       "compiled"
+                                        :namespaces (count nses)
+                                        :warnings   @warnings
+                                        :ms         (long (/ (- (System/nanoTime) start) 1e6))}
+                           inputs)))
         recompile-changes!
                      (fn [changed res-nses]
                        (let [start  (System/nanoTime)
@@ -1444,14 +1462,13 @@
                          (install-goog-libs compiler-env opts)
                          (env/with-compiler-env compiler-env
                            (run-hooks! compiler-env inputs opts :watch done))
-                         (doto {:type       "compiled"
-                                :namespaces (count done)
-                                :compiled   (sort done)
-                                :files      (map #(.getPath (output-file % opts)) (sort done))
-                                :warnings   @warnings
-                                :ms         (long (/ (- (System/nanoTime) start) 1e6))}
-                           outstanding!
-                           (->> (event! "compiled")))))
+                         (outstanding! {:type       "compiled"
+                                        :namespaces (count done)
+                                        :compiled   (sort done)
+                                        :files      (map #(.getPath (output-file % opts)) (sort done))
+                                        :warnings   @warnings
+                                        :ms         (long (/ (- (System/nanoTime) start) 1e6))}
+                           inputs)))
         compile!     (fn
                        ;; Compiles changed files (sources and macros) and
                        ;; namespaces nses (whose resources changed, or the

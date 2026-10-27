@@ -862,7 +862,11 @@ export default function cljf(options) {
       // options.ssrEntries run in the ssr environment's runner once compiled,
       // until they ran
       let ssrEntries = options.ssrEntries ?? [];
-      const runSsrEntries = async () => {
+      // one run at a time: a compile's run waits for the previous compile's,
+      // which imports the entries it doesn't run yet
+      let ssrEntriesRun = Promise.resolve();
+      const runSsrEntries = () => (ssrEntriesRun = ssrEntriesRun.then(runSsrEntriesOnce));
+      const runSsrEntriesOnce = async () => {
         if (!ssrEntries.length) return;
         // created when it's first read
         const runner = server.environments.ssr?.runner;
@@ -976,9 +980,7 @@ export default function cljf(options) {
           return;
         }
         // before the hot updates waiting for the compile
-        const { released, outstanding, ignored } = event.type === 'compiled'
-          ? warnings.compiled(event)
-          : { released: [], outstanding: [], ignored: 0 };
+        const held = event.type === 'compiled' ? warnings.compiled(event) : null;
         compiled();
         // The dev manifest, the pages' scripts, is written after the first
         // compile even if it failed: pages then show the error overlay.
@@ -987,7 +989,8 @@ export default function cljf(options) {
           await writeManifest(Object.fromEntries(Object.entries(info.main).map(([ns, file]) =>
             [ns, { scripts: [`${config.base}@vite/client`, devUrl(file)], preload: [] }])));
         }
-        if (event.type === 'compiled' && outstanding.length) {
+        if (held?.outstanding.length) {
+          const { outstanding } = held;
           const [first] = outstanding;
           config.logger.warn(`[cljf] compiled ${event.namespaces} namespace(s) in ${event.ms}ms, ` +
             `hot reload paused by ${outstanding.length} warning(s)`, { timestamp: true });
@@ -999,19 +1002,23 @@ export default function cljf(options) {
             loc: first.file ? { file: first.file, line: first.line, column: first.column } : undefined,
           });
           // The ssr entries run regardless: they run once, and a warning is no
-          // error. A page a server entry serves shows the overlay above; a
-          // port that never opens shows nothing but the line above.
+          // error. The HTML pages a server entry serves show the overlay above
+          // (those loading @vite/client); a port that never opens shows
+          // nothing but the line above.
           runSsrEntries();
           ready();
-        } else if (event.type === 'compiled') {
+        } else if (held) {
+          const { released, ignored } = held;
           // all namespaces' warnings, not only this compile's
           config.logger.info(`[cljf] compiled ${event.namespaces} namespace(s) in ${event.ms}ms` +
             (ignored ? `, ${ignored} outstanding warning(s) ignored` : ''), { timestamp: true });
           problem = null;
-          // the namespaces held back that this compile didn't update
-          const client = server.environments.client;
-          for (const file of released) {
-            for (const mod of client.moduleGraph.getModulesByFile(file) ?? []) client.reloadModule(mod);
+          // the namespaces held back that this compile didn't update, in every
+          // environment: a server entry's (ssr) as well as the pages'
+          for (const environment of Object.values(server.environments)) {
+            for (const file of released) {
+              for (const mod of environment.moduleGraph.getModulesByFile(file) ?? []) environment.reloadModule(mod);
+            }
           }
           runSsrEntries();
           ready();
