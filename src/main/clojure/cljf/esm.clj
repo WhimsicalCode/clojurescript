@@ -568,7 +568,9 @@
                       #'*generated-sources* (if (:test-runner opts)
                                               (generate-test-runner opts)
                                               *generated-sources*)
-                      #'*api-changed* (atom #{}))
+                      #'*api-changed* (atom #{})
+                      ;; the classpath doesn't change during a build
+                      #'util/*ns-source-cache* (java.util.concurrent.ConcurrentHashMap.))
        (env/with-compiler-env compiler-env
          (swap! compiler-env assoc :options opts)
          (let [start  (System/nanoTime)

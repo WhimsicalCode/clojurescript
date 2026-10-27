@@ -100,11 +100,27 @@
    (cond-> (string/replace (munge-path ns) \. sep)
      ext (str "." (name ext)))))
 
+(def ^:dynamic *ns-source-cache*
+  "A java.util.concurrent.ConcurrentHashMap caching ns->source while bound,
+  i.e. for the duration of one cljf.esm build: classpath lookups search
+  every jar and directory, and the analyzer looks up namespaces' sources
+  many times. nil, the default, doesn't cache."
+  nil)
+
 (defn ns->source
   "Given a namespace as a symbol return the corresponding resource if it exists."
   [ns]
-  (or (io/resource (ns->relpath ns :cljs))
-      (io/resource (ns->relpath ns :cljc))))
+  (let [lookup #(or (io/resource (ns->relpath ns :cljs))
+                    (io/resource (ns->relpath ns :cljc)))]
+    (if-let [^java.util.concurrent.ConcurrentHashMap cache *ns-source-cache*]
+      (let [k (str ns)
+            v (.get cache k)]
+        (if (nil? v)
+          (let [v (or (lookup) ::none)]
+            (.put cache k v)
+            (when-not (identical? ::none v) v))
+          (when-not (identical? ::none v) v)))
+      (lookup))))
 
 (defn path-seq
   [file-str]
