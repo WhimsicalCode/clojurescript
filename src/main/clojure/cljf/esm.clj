@@ -758,8 +758,9 @@
           loader (.getContextClassLoader thread)
           dcl    (clojure.lang.DynamicClassLoader. (clojure.lang.RT/baseLoader))]
       (if ready?
-        ;; when it was last used, see cljf.main/prune!
-        (.setLastModified done (System/currentTimeMillis))
+        ;; used while this process runs (a watch loads more of its classes
+        ;; later), see cljf.main/prune!
+        ((requiring-resolve 'cljf.main/hold!) dir)
         (.mkdirs tmp))
       (.addURL dcl (.toURL (.toURI (or tmp dir))))
       ;; threads started by the build inherit it
@@ -780,6 +781,7 @@
             (try
               (java.nio.file.Files/move (.toPath tmp) (.toPath dir)
                 (into-array [java.nio.file.StandardCopyOption/ATOMIC_MOVE]))
+              ((requiring-resolve 'cljf.main/hold!) dir)
               ;; another build stored them meanwhile
               (catch java.io.IOException _)))
           ret)

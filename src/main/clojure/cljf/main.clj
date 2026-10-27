@@ -89,6 +89,8 @@
         (alter-var-root (requiring-resolve 'cljs.js-deps/goog-dependencies)
           (constantly (fn [] deps)))))))
 
+(declare hold!)
+
 (defn- load-compiler!
   "Loads the compiler (cljf.esm and cljs.core's macros) from its classes in
   the cache, compiling them there first if they aren't."
@@ -108,6 +110,7 @@
         (.addURL dcl (.toURL (.toURI dir)))
         ;; threads started from now on inherit it
         (.setContextClassLoader thread dcl)
+        (hold! dir)
         (require 'cljf.esm)
         (load-goog-dependencies! dir))
       (let [tmp (io/file (str dir ".tmp-" (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime)))]
@@ -120,23 +123,58 @@
         (spit (io/file tmp ".complete") "")
         (try
           (Files/move (.toPath tmp) (.toPath dir) (into-array [StandardCopyOption/ATOMIC_MOVE]))
+          (hold! dir)
           ;; another run compiled them meanwhile
           (catch java.io.IOException _
             (doseq [^File f (reverse (file-seq tmp))] (.delete f))))))))
 
+(def ^:private holder
+  (delay
+    (java.util.concurrent.Executors/newSingleThreadScheduledExecutor
+      (reify java.util.concurrent.ThreadFactory
+        (newThread [_ r]
+          (doto (Thread. ^Runnable r "cljf-cache-hold") (.setDaemon true)))))))
+
+(defn hold!
+  "Marks cache entry dir as used every ten minutes while this process runs:
+  classes it loaded load more classes from it later (i.e. a watch's), so
+  prune! mustn't delete it meanwhile."
+  [^File dir]
+  (let [done (io/file dir ".complete")]
+    (.scheduleAtFixedRate ^java.util.concurrent.ScheduledExecutorService @holder
+      ^Runnable #(when (.exists done) (.setLastModified done (System/currentTimeMillis)))
+      0 10 java.util.concurrent.TimeUnit/MINUTES)))
+
+(def ^:private keep-entries
+  "How many of a cache's most recently used entries prune! keeps however
+  old: each key (i.e. every edit of a Clojure source on the classpath, for
+  macro classes) is a new entry of tens of MB."
+  8)
+
 (defn prune!
   "Deletes the entries (directories) of root, the compiler's classes by
-  default, of other keys not used for a week: a running compiler may still
-  load classes from them."
+  default, not used for a week, and beyond the keep-entries most recently
+  used ones those not used for an hour: a running compiler may still load
+  classes from an entry it started with. Entries being written (.tmp-) are
+  deleted after an hour, a build that crashed left them."
   ([] (prune! (cache-root)))
   ([^File root]
-   (let [week (* 7 24 3600 1000)
-         now  (System/currentTimeMillis)]
-     (doseq [^File dir (.listFiles root)
-             :let [done (io/file dir ".complete")]
-             :when (and (.isDirectory dir)
-                        (< (if (.exists done) (.lastModified done) (.lastModified dir)) (- now week)))]
-       (doseq [^File f (reverse (file-seq dir))] (.delete f))))))
+   (let [hour    (* 3600 1000)
+         week    (* 7 24 hour)
+         now     (System/currentTimeMillis)
+         used    (fn [^File dir]
+                   (let [done (io/file dir ".complete")]
+                     (if (.exists done) (.lastModified done) (.lastModified dir))))
+         dirs    (filter #(.isDirectory ^File %) (.listFiles root))
+         tmp?    #(string/includes? (.getName ^File %) ".tmp-")
+         entries (sort-by (comp - used) (remove tmp? dirs))
+         stale   (concat
+                   (filter #(< (used %) (- now hour)) (filter tmp? dirs))
+                   (filter #(< (used %) (- now week)) (take keep-entries entries))
+                   (filter #(< (used %) (- now hour)) (drop keep-entries entries)))]
+     (doseq [^File dir stale
+             ^File f (reverse (file-seq dir))]
+       (.delete f)))))
 
 (defn -main
   "Usage: clojure -M -m cljf.main [build|watch] options..., see cljf.esm/-main."
