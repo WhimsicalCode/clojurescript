@@ -41,13 +41,22 @@ async function viteEditMap({ magicStringPath, fileName, code, prefix, updates },
 parentPort.on('message', async ({ id, oxcPath, remappingPath, fileName, code, map, edit, options }) => {
   try {
     oxc ??= await import(pathToFileURL(oxcPath).href);
-    const result = await oxc.minify(fileName, code, { ...options, sourcemap: Boolean(map) });
+    if (map) remapping ??= (await import(pathToFileURL(remappingPath).href)).default;
+    // the minifier runs off this thread: the chunk's map (with Vite's preload
+    // edit composed in) is prepared meanwhile
+    const minifying = oxc.minify(fileName, code, { ...options, sourcemap: Boolean(map) });
+    // a rejected minify is awaited below, not reported as unhandled meanwhile
+    minifying.catch(() => {});
+    let input = null;
+    if (map) {
+      const parsed = JSON.parse(map);
+      input = edit ? await viteEditMap(edit, parsed) : parsed;
+    }
+    const result = await minifying;
     let composed = null;
     if (map) {
-      remapping ??= (await import(pathToFileURL(remappingPath).href)).default;
       // blanking kept the positions of the bundler's map
-      const parsed = JSON.parse(map);
-      composed = remapping([result.map, edit ? await viteEditMap(edit, parsed) : parsed], () => null);
+      composed = remapping([result.map, input], () => null);
       composed = { ...composed };
     }
     parentPort.postMessage({ id, code: result.code, map: composed, error: result.errors?.[0]?.message });
