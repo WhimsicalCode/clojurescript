@@ -4964,7 +4964,9 @@ x                          (not (contains? ret :info)))
                  (not (:analyze-deps opts)) (not (:load-macros opts)) (not (:macro-infer opts)))
           (let [^File src src
                 k   [(.getPath src) (.lastModified src) (:macros-ns opts)
-                     (boolean (get-in @env/*compiler* [:options :emit-constants]))]
+                     ;; the watcher looks up changed files' namespaces outside
+                     ;; any compiler env
+                     (boolean (some-> env/*compiler* deref :options :emit-constants))]
                 ret (or (.get cache k)
                         (let [ret (parse-ns* src nil opts)]
                           (.put cache k ret)

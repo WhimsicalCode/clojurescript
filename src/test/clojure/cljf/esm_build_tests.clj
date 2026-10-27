@@ -8,7 +8,9 @@
 
 (ns cljf.esm-build-tests
   "cljf.esm builds reusing the output of a previous build."
-  (:require [cljs.compiler :as comp]
+  (:require [cljs.analyzer :as ana]
+            [cljs.compiler :as comp]
+            [cljs.env :as env]
             [cljf.esm :as esm]
             [cljs.util :as util]
             [cljs.vendor.clojure.data.json :as json]
@@ -212,6 +214,16 @@
     (is (instance? Throwable err) "fails, without waiting forever for the failed namespace's dependents")
     (is (.exists (io/file dir "out" "test" "findep.js")) "a namespace not requiring the failed one is compiled")
     (is (not (.exists (io/file dir "out" "test" "fdep2.js"))) "its dependents, transitively, aren't")))
+
+(deftest parse-ns-cache-without-a-compiler-env
+  ;; the watcher looks up changed files' namespaces outside any compiler env,
+  ;; with the per-recompile cache bound
+  (let [dir (temp-dir)
+        [_ f] (write-source! dir 'test.pnc "(ns test.pnc)" (System/currentTimeMillis))]
+    (binding [env/*compiler* nil
+              ana/*parse-ns-cache* (java.util.concurrent.ConcurrentHashMap.)]
+      (is (= 'test.pnc (:ns (ana/parse-ns f))))
+      (is (= 'test.pnc (:ns (ana/parse-ns f))) "and from the cache"))))
 
 (deftest errors-in-macro-namespaces-name-their-file-and-line
   (let [dir    (temp-dir)
