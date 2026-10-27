@@ -218,6 +218,17 @@
     (is (not (.exists (io/file dir "out" "test" "fdep2.js"))) "its dependents, transitively, aren't")
     (is (not (.exists (io/file dir "out" "test" "fdia.js"))) "nor one also requiring a namespace that compiled")))
 
+(deftest ns-first-segments-after-a-removal-and-an-addition
+  ;; a removal and an addition leave the count of namespaces unchanged
+  (let [cenv (env/default-compiler-env)
+        segs @#'comp/ns-first-segments]
+    (swap! cenv update ::ana/namespaces assoc 'aaa.x {} 'bbb.y {})
+    (is (contains? (segs cenv) "aaa"))
+    (ana/remove-namespace! cenv 'aaa.x)
+    (swap! cenv update ::ana/namespaces assoc 'ccc.z {})
+    (is (not (contains? (segs cenv) "aaa")))
+    (is (contains? (segs cenv) "ccc"))))
+
 (deftest parse-ns-cache-without-a-compiler-env
   ;; the watcher looks up changed files' namespaces outside any compiler env,
   ;; with the per-recompile cache bound

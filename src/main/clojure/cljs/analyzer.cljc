@@ -644,6 +644,25 @@
    (def load-mutex (Object.)))
 
 #?(:clj
+   (def ^java.util.concurrent.atomic.AtomicLong namespace-removals
+     "Counts removals of namespaces from ::namespaces (twice each, see
+     remove-namespace!): caches of what's derived from the set of namespaces
+     (cljs.compiler's first segments) check it, since a removal and an
+     addition leave the count unchanged."
+     (java.util.concurrent.atomic.AtomicLong.)))
+
+#?(:clj
+   (defn remove-namespace!
+     "Removes namespace ns from compiler state (an atom)'s ::namespaces,
+     counting it in namespace-removals before and after: a reader seeing the
+     namespaces without it sees the first count, one that saw them with it
+     sees the second later."
+     [state ns]
+     (.incrementAndGet namespace-removals)
+     (swap! state update-in [::namespaces] dissoc ns)
+     (.incrementAndGet namespace-removals)))
+
+#?(:clj
    (def ^:private required-macro-nses
      "The macro namespaces require-macros-ns required, once their load
      completed. Not *loaded-libs*: the ns macro adds a namespace to it when

@@ -117,23 +117,31 @@
 
 #?(:clj
    (def ^:private ns-first-segments-cache
-     "[compiler-env namespaces first-segments], the first segments of the
-     analyzed namespaces of a compiler env: find-ns-starts-with runs for every
-     local munged. Updated as namespaces are added from the ones new since,
-     by one thread at a time: a parallel build adds thousands, each a full
-     recomputation on every thread munging meanwhile otherwise."
+     "[compiler-env namespaces first-segments removals], the first segments of
+     the analyzed namespaces of a compiler env: find-ns-starts-with runs for
+     every local munged. Updated as namespaces are added from the ones new
+     since, by one thread at a time: a parallel build adds thousands, each a
+     full recomputation on every thread munging meanwhile otherwise. Valid
+     while no namespace was removed (ana/namespace-removals): a removal and
+     an addition leave the count unchanged."
      (atom nil)))
 
 #?(:clj
    (defn- ns-first-segments [cenv]
-     (let [nss (::ana/namespaces @cenv)
-           [e cached segs] @ns-first-segments-cache]
-       (if (and (identical? e cenv) (== (count cached) (count nss)))
+     ;; the namespaces read before the removals: namespaces missing one are
+     ;; seen with its first count (see ana/remove-namespace!)
+     (let [nss      (::ana/namespaces @cenv)
+           removals (.get ana/namespace-removals)
+           [e cached segs r] @ns-first-segments-cache]
+       (if (and (identical? e cenv) (== (count cached) (count nss)) (== r removals))
          segs
          (locking ns-first-segments-cache
-           (let [nss (::ana/namespaces @cenv)
-                 [e cached segs] @ns-first-segments-cache]
-             (if (and (identical? e cenv) (== (count cached) (count nss)))
+           (let [;; here the other way round: kept with a count read before
+                 ;; the namespaces, a removal they miss counts again after
+                 removals (.get ana/namespace-removals)
+                 nss      (::ana/namespaces @cenv)
+                 [e cached segs r] @ns-first-segments-cache]
+             (if (and (identical? e cenv) (== (count cached) (count nss)) (== r removals))
                segs
                (let [;; the segments of namespaces added since, and how many:
                      ;; when every cached namespace is still there (none were
@@ -148,7 +156,7 @@
                      segs (if (and added (== (count cached) (- (count nss) n)))
                             added
                             (into #{} (map get-first-ns-segment) (keys nss)))]
-                 (reset! ns-first-segments-cache [cenv nss segs])
+                 (reset! ns-first-segments-cache [cenv nss segs removals])
                  segs))))))))
 
 (defn ^:dynamic find-ns-starts-with [needle]
@@ -2991,7 +2999,7 @@
                     (when (and (get-in nses [ns :defs])
                                (not= 'cljs.core ns)
                                (not= :interactive (:mode opts)))
-                      (swap! env/*compiler* update-in [::ana/namespaces] dissoc ns))
+                      (ana/remove-namespace! env/*compiler* ns))
                     (let [[ret recompiled?] (compile-file* src-file dest-file opts)]
                       (when (and *recompiled*
                                  recompiled?)

@@ -292,7 +292,8 @@
    (remove-ns env/*compiler* ns))
   ([state ns]
    {:pre [(symbol? ns)]}
-   (swap! state update-in [::ana/namespaces] dissoc ns)))
+   #?(:clj  (ana/remove-namespace! state ns)
+      :cljs (swap! state update-in [::ana/namespaces] dissoc ns))))
 
 (defmacro in-cljs-user
   "Binds cljs.analyzer/*cljs-ns* to 'cljs.user and uses the given compilation
