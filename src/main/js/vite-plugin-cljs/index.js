@@ -246,10 +246,10 @@ class ChunkSourceMap {
 // map of that edit with the chunk's: serially, chunk after chunk, a few
 // seconds for large bundles. When the plugin composes every chunk's map again
 // after minifying anyway, Vite rewrites the code without the map, and the
-// minify workers compose the same edit's map (viteEditMap in
-// minify-worker.js). The edit, from the chunk's code before (code) and after
-// (edited): {prefix, updates: [[start, end, text]]}, or null when the edited
-// code isn't exactly such an edit.
+// minify workers compose the same edit's map (preload-edit-map.js). The
+// edit, from the chunk's code before (code) and after (edited): {prefix,
+// updates: [[start, end, text]]}, or null when the edited code isn't exactly
+// such an edit.
 const PRELOAD_MARKER = '__VITE_PRELOAD__';
 const PRELOAD_REPLACEMENT = /^(?:void 0|\[\]|__vite__mapDeps\(\[[\d,]*\]\))/;
 const MAP_DEPS = /^const __vite__mapDeps=[^\n]*\n/;
@@ -400,7 +400,7 @@ export default module.exports;
  */
 export default function cljf(options) {
   const manifestName = options.manifest ?? 'manifest.json';
-  let config, proc, server, minify, root, cwd, outputDir, compiler, magicStringPath;
+  let config, proc, server, minify, root, cwd, outputDir, compiler;
   // chunks' preload edits whose source maps generateBundle composes
   const preloadEdits = new Map();
   // the namespaces of the pages' scripts, compiled as main namespaces
@@ -641,12 +641,7 @@ export default function cljf(options) {
       if (config.command === 'build' && options.prune !== false && minify &&
           (config.build.sourcemap === true || config.build.sourcemap === 'hidden')) {
         const importAnalysis = config.plugins.find(p => p.name === 'vite:build-import-analysis');
-        try {
-          magicStringPath = resolveFromProject(config.root, 'magic-string', 'compose source maps');
-        } catch (e) {
-          magicStringPath = null;
-        }
-        if (importAnalysis?.generateBundle && magicStringPath) deferPreloadSourceMaps(importAnalysis, preloadEdits);
+        if (importAnalysis?.generateBundle) deferPreloadSourceMaps(importAnalysis, preloadEdits);
       }
     },
 
@@ -751,7 +746,7 @@ export default function cljf(options) {
           chunks.map(c => c.map ? c.map.toString() : null),
           chunks.map(c => {
             const pending = preloadEdits.get(c.fileName);
-            return pending && c.map && { magicStringPath, fileName: c.fileName, code: pending.code, ...pending.edit };
+            return pending && c.map && { fileName: c.fileName, code: pending.code, ...pending.edit };
           }),
           {
             module: true,
