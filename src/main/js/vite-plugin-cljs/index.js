@@ -364,7 +364,8 @@ export default function cljf(options) {
 
   function run(args, onEvent) {
     const [cmd, ...cmdArgs] = compiler;
-    const child = spawn(cmd, [...cmdArgs, '-m', 'cljf.esm', ...args], {
+    // cljf.main: cljf.esm's command line, loading the compiler from cached classes
+    const child = spawn(cmd, [...cmdArgs, '-m', 'cljf.main', ...args], {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
