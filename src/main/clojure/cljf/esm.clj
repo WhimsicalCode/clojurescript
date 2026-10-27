@@ -418,14 +418,18 @@
   ready. Ready namespaces are compiled in dependency order (earliest
   first), as they were started before: macros may read the analysis of
   namespaces they don't require (i.e. sci's copy-var, of cljs.analyzer.api).
-  After a failure, the namespaces not requiring the failed one are compiled
-  still; throws the first failure once they have been."
+  Their reads through cljs.analyzer.api wait for namespaces earlier in the
+  order (ana/*await-ns*), as a sequential build compiled them already, with
+  another pool thread compiling meanwhile. After a failure, the namespaces
+  not requiring the failed one are compiled still; throws the first failure
+  once they have been."
   [inputs opts]
   (let [threads    (or (:parallel-build-threads opts)
                        (.availableProcessors (Runtime/getRuntime)))
-        pool       (java.util.concurrent.ThreadPoolExecutor. (int threads) (int threads) 0
-                     java.util.concurrent.TimeUnit/MILLISECONDS
-                     (java.util.concurrent.PriorityBlockingQueue.))
+        ^java.util.concurrent.ThreadPoolExecutor pool
+        (java.util.concurrent.ThreadPoolExecutor. (int threads) (int threads) 60
+          java.util.concurrent.TimeUnit/SECONDS
+          (java.util.concurrent.PriorityBlockingQueue.))
         by-ns      (into {} (map (juxt :ns identity)) inputs)
         ;; the dependencies earlier in the order, like waiting for the
         ;; namespaces submitted before (a cycle doesn't wait forever)
@@ -441,20 +445,44 @@
         pending    (java.util.concurrent.atomic.AtomicInteger. (count inputs))
         done       (java.util.concurrent.CountDownLatch. 1)
         failure    (atom nil)
+        ;; counted down once each namespace is compiled (or failed)
+        compiled   (into {} (map (fn [{:keys [ns]}] [ns (java.util.concurrent.CountDownLatch. 1)])) inputs)
+        await-ns   (fn [target]
+                     (let [ti (index target)
+                           ci (index ana/*cljs-ns*)
+                           ^java.util.concurrent.CountDownLatch l (compiled target)]
+                       ;; only namespaces before the current one, which a
+                       ;; sequential build compiled already: never a cycle
+                       (when (and ti ci (< (long ti) (long ci)) (pos? (.getCount l)))
+                         ;; another thread compiles meanwhile, the waiting one
+                         ;; holds a pool thread
+                         (locking pool
+                           (.setMaximumPoolSize pool (inc (.getMaximumPoolSize pool)))
+                           (.setCorePoolSize pool (inc (.getCorePoolSize pool))))
+                         (try
+                           (.await l)
+                           (finally
+                             (locking pool
+                               (.setCorePoolSize pool (dec (.getCorePoolSize pool)))
+                               (.setMaximumPoolSize pool (dec (.getMaximumPoolSize pool)))))))))
         finish!    (fn [] (when (zero? (.decrementAndGet pending)) (.countDown done)))
         ;; the namespaces requiring a failed one, transitively, are never
-        ;; ready: counted as finished
+        ;; ready: counted as finished, their waiters (await-ns) let go
         skipped    (java.util.concurrent.ConcurrentHashMap/newKeySet)
         skip!      (fn skip! [ns]
                      (doseq [d (dependents ns)]
                        (when (.add ^java.util.Set skipped d)
+                         (.countDown ^java.util.concurrent.CountDownLatch (compiled d))
                          (skip! d)
                          (finish!))))
         submit     (fn submit [ns]
                      (let [i    (long (index ns))
                            task (bound-fn []
                                   (try
-                                    (compile-ns (by-ns ns) opts)
+                                    (try
+                                      (compile-ns (by-ns ns) opts)
+                                      (finally
+                                        (.countDown ^java.util.concurrent.CountDownLatch (compiled ns))))
                                     (doseq [d (dependents ns)]
                                       (when (zero? (.decrementAndGet ^java.util.concurrent.atomic.AtomicInteger (remaining d)))
                                         (submit d)))
@@ -474,9 +502,11 @@
     (try
       (if (seq inputs)
         (do
-          (doseq [{:keys [ns]} inputs
-                  :when (empty? (deps ns))]
-            (submit ns))
+          ;; the tasks' bound-fns capture it
+          (binding [ana/*await-ns* await-ns]
+            (doseq [{:keys [ns]} inputs
+                    :when (empty? (deps ns))]
+              (submit ns)))
           (.await done))
         nil)
       (when-let [e @failure]
@@ -487,6 +517,7 @@
         ;; doesn't outlive the build), the ones requiring it are skipped,
         ;; and all of them finish before the build returns, i.e. before the
         ;; watcher's next build
+        (doseq [[_ ^java.util.concurrent.CountDownLatch l] compiled] (.countDown l))
         (.shutdown pool)
         (.awaitTermination pool 1 TimeUnit/HOURS)))))
 

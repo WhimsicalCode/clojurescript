@@ -4922,6 +4922,23 @@ x                          (not (contains? ret :info)))
      time. nil, the default, doesn't cache."
      nil))
 
+#?(:clj
+   (def ^:dynamic *await-ns*
+     "Under cljf.esm's :parallel-build, a fn of a namespace symbol waiting
+     until the namespace is analyzed if it's one the build compiles before
+     the current one: macros reading other namespaces' analysis through
+     cljs.analyzer.api (which they may not require) see what a sequential
+     build would. nil otherwise."
+     nil))
+
+#?(:clj
+   (defn await-ns
+     "Waits for namespace ns (a symbol or string), see *await-ns*."
+     [ns]
+     (when-let [f *await-ns*]
+       (when ns
+         (f (symbol (str ns)))))))
+
 #?(:clj (declare parse-ns*))
 
 #?(:clj

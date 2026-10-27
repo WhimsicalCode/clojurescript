@@ -3675,6 +3675,12 @@
     "Argument to resolve must be a quoted symbol")
   (core/let [sym (second quoted-sym)
              env &env
+             ;; the namespace may be one the build compiles in parallel,
+             ;; which needn't be required: its analysis as of a sequential
+             ;; build (cljf.esm's :parallel-build)
+             _   #?(:clj  (core/when-let [ns (namespace sym)]
+                            (ana/await-ns (ana/resolve-ns-alias env ns)))
+                    :cljs nil)
              [var meta] (try
                           (core/let [var (ana/resolve-var env sym (ana/confirm-var-exists-throw)) ]
                             [var (ana/var-meta var)])
