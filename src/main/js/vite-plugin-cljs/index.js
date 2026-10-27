@@ -146,12 +146,21 @@ function resolveFromProject(root, specifier, purpose) {
 
 // The native summarizer (src/main/rust/prune, script/build-native-prune) for
 // this platform, null without one.
+let nativePruneWarned = false;
+
 function loadNativePrune() {
   const file = new URL(`./native/cljf-prune.${process.platform}-${process.arch}.node`, import.meta.url);
   if (process.env.CLJF_NATIVE_PRUNE === 'false' || !existsSync(file)) return null;
   try {
     return createRequire(import.meta.url)(fileURLToPath(file));
   } catch (e) {
+    // a binary that's there but doesn't load (i.e. built for another Node.js
+    // ABI) is said once, not mistaken for none
+    if (!nativePruneWarned) {
+      nativePruneWarned = true;
+      console.warn(`[cljf] the native prune summarizer ${fileURLToPath(file)} didn't load, ` +
+        `summarizing in JavaScript instead (same output): ${e.message.split('\n')[0]}`);
+    }
     return null;
   }
 }
