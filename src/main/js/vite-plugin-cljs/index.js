@@ -176,10 +176,46 @@ async function summarizeChunks(oxcPath, chunks) {
   return results;
 }
 
-// Composes source maps of the pruned, minified chunks with the bundler's,
-// which the project depends on: @jridgewell/remapping.
-async function loadRemapping(root) {
-  return (await loadFromProject(root, '@jridgewell/remapping', 'compose source maps')).default;
+// A composed source map, as the bundler's chunks have them: with toString
+// and toUrl.
+class ChunkSourceMap {
+  constructor(map) {
+    Object.assign(this, map);
+  }
+  toString() {
+    return JSON.stringify(this);
+  }
+  toUrl() {
+    return `data:application/json;charset=utf-8;base64,${Buffer.from(this.toString()).toString('base64')}`;
+  }
+}
+
+// Minifies the pruned chunks (codes) in worker threads (minify-worker.js), the
+// largest first, composing their source maps with the bundler's (maps, JSON
+// or null) with @jridgewell/remapping, which the project depends on, at
+// remappingPath. Returns [{code, map, error}].
+async function minifyChunks(oxcPath, remappingPath, fileNames, codes, maps, options) {
+  const order = codes.map((c, i) => i).sort((a, b) => codes[b].length - codes[a].length);
+  const results = new Array(codes.length);
+  const size = Math.min(codes.length, os.availableParallelism());
+  const workers = Array.from({ length: size }, () => new Worker(new URL('./minify-worker.js', import.meta.url)));
+  try {
+    await Promise.all(workers.map(async worker => {
+      for (let i = order.shift(); i !== undefined; i = order.shift()) {
+        const reply = await new Promise((resolve, reject) => {
+          worker.once('message', resolve);
+          worker.once('error', reject);
+          worker.postMessage({ id: i, oxcPath, remappingPath, fileName: fileNames[i], code: codes[i], map: maps[i], options });
+        });
+        worker.removeAllListeners('error');
+        if (reply.fatal) throw new Error(reply.fatal);
+        results[i] = reply;
+      }
+    }));
+  } finally {
+    await Promise.all(workers.map(w => w.terminate()));
+  }
+  return results;
 }
 
 // Whether a dependency pre-bundled by Vite's dev server was CommonJS, from the
@@ -572,29 +608,32 @@ export default function cljf(options) {
         const pruned = pruneChunks(chunks.map(c => c.code), await summarizeChunks(oxcPath, chunks));
         const pruneMs = Date.now() - start;
         const renames = propertyRenames(pruned.codes);
-        const minifier = minify ? oxc.minify : null;
-        const remapping = minifier && chunks.some(c => c.map) ? await loadRemapping(config.root) : null;
-        await Promise.all(chunks.map(async (chunk, i) => {
+        const minified = minify && await minifyChunks(
+          oxcPath,
+          chunks.some(c => c.map) ? resolveFromProject(config.root, '@jridgewell/remapping', 'compose source maps') : null,
+          // the file name in the chunk's directory: the source the map's
+          // sources are composed relative to
+          chunks.map(c => path.basename(c.fileName)),
+          pruned.codes,
+          chunks.map(c => c.map ? c.map.toString() : null),
+          {
+            module: true,
+            compress: true,
+            mangle: true,
+            // the renames apply across chunks, cljs$ properties are the
+            // compiler's, only accessed as properties (or quoted)
+            mangleProps: { include: /^cljs\$/, quoted: true, cache: renames },
+            // licence notices (/*! ... */, @license, @preserve), as other minifiers keep them
+            codegen: { legalComments: 'inline' },
+          });
+        chunks.forEach((chunk, i) => {
           let code = pruned.codes[i];
-          if (minifier) {
-            // the file name in the chunk's directory: the source the map's
-            // sources are composed relative to
-            const result = await minifier(path.basename(chunk.fileName), code, {
-              module: true,
-              compress: true,
-              mangle: true,
-              // the renames apply across chunks, cljs$ properties are the
-              // compiler's, only accessed as properties (or quoted)
-              mangleProps: { include: /^cljs\$/, quoted: true, cache: renames },
-              // licence notices (/*! ... */, @license, @preserve), as other minifiers keep them
-              codegen: { legalComments: 'inline' },
-              sourcemap: Boolean(chunk.map),
-            });
-            if (result.errors?.length) this.warn(`minifying ${chunk.fileName}: ${result.errors[0].message}`);
+          if (minified) {
+            const result = minified[i];
+            if (result.error) this.warn(`minifying ${chunk.fileName}: ${result.error}`);
             code = result.code;
             if (chunk.map) {
-              // blanking kept the positions of the bundler's map
-              const map = remapping([result.map, JSON.parse(chunk.map.toString())], () => null);
+              const map = new ChunkSourceMap(result.map);
               const dir = path.join(path.resolve(config.root, config.build.outDir), path.dirname(chunk.fileName));
               map.sources = map.sources.map(source => sourcePath(dir, source));
               chunk.map = map;
@@ -606,7 +645,7 @@ export default function cljf(options) {
             }
           }
           chunk.code = code;
-        }));
+        });
         if (!pruned.removed && await commonJSPackage(config.root)) {
           this.warn('nothing was pruned: package.json has "type": "commonjs", so the bundler treats the project\'s ' +
             '.js files as CommonJS and wraps the ClojureScript they import in initializers. Use "type": "module".');
