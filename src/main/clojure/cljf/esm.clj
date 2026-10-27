@@ -456,6 +456,34 @@
         (.shutdown pool)
         (.awaitTermination pool 1 TimeUnit/HOURS)))))
 
+;; Loading a macro namespace (Clojure) holds the analyzer's load-mutex, the
+;; namespaces using it wait meanwhile.
+(defn- preload-macro-namespaces
+  "Under :parallel-build, starts loading the macro namespaces the inputs
+  require in a thread, in dependency order, while cljs.core is compiled:
+  the namespaces compiled after it would otherwise wait for each other's
+  first loads, one at a time. Load failures are left to the namespaces
+  requiring them. Returns the thread's Future."
+  [inputs]
+  (let [nses (into []
+               (comp (mapcat (fn [{:keys [ast]}]
+                               (concat (vals (:require-macros ast)) (vals (:use-macros ast)))))
+                     (distinct))
+               inputs)
+        pool (Executors/newSingleThreadExecutor)]
+    (try
+      (.submit pool
+        ^Callable
+        (bound-fn []
+          (doseq [ns nses
+                  :when (not (contains? @@#'clojure.core/*loaded-libs* ns))]
+            (try
+              (locking ana/load-mutex
+                (require ns))
+              (catch Throwable _)))))
+      (finally
+        (.shutdown pool)))))
+
 (defn- ensure-analyzed!
   "Namespaces up to date aren't recompiled, nor analyzed. Reads their
   analysis (from the analysis cache) so that the compiler environment
@@ -632,14 +660,17 @@
            (swap! compiler-env assoc ::namespaces (into #{} (map :ns) inputs))
            (swap! compiler-env update ::ana/data-readers merge (ana/load-data-readers))
            (write-build-info opts)
-           ;; cljs.core is analyzed first, the compiler expects its analysis
-           ;; to be available when compiling anything else
-           (compile-ns (first (filter #(= 'cljs.core (:ns %)) inputs)) opts)
-           (let [others (remove #(= 'cljs.core (:ns %)) inputs)]
-             (if (:parallel-build opts)
-               (compile-parallel others opts)
-               (doseq [input others]
-                 (compile-ns input opts))))
+           (let [preload (when (:parallel-build opts)
+                           (preload-macro-namespaces inputs))]
+             ;; cljs.core is analyzed first, the compiler expects its analysis
+             ;; to be available when compiling anything else
+             (compile-ns (first (filter #(= 'cljs.core (:ns %)) inputs)) opts)
+             (let [others (remove #(= 'cljs.core (:ns %)) inputs)]
+               (if (:parallel-build opts)
+                 (compile-parallel others opts)
+                 (doseq [input others]
+                   (compile-ns input opts))))
+             (some-> ^Future preload (.get)))
            (check-js-entries compiler-env opts)
            (write-constants! compiler-env opts)
            (install-goog-shims opts)
