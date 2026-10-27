@@ -281,6 +281,9 @@ function deferPreloadSourceMaps(plugin, pending) {
   const hook = plugin.generateBundle;
   const handler = typeof hook === 'function' ? hook : hook.handler;
   const deferred = async function (outputOptions, bundle) {
+    // this build's edits only: a watch (or reused plugin instance) builds
+    // again, chunks without hashed names keep their file names
+    pending.clear();
     const chunks = Object.values(bundle).filter(c => c.type === 'chunk' && c.map && c.code.includes(PRELOAD_MARKER));
     const before = new Map(chunks.map(c => [c, { code: c.code, map: c.map }]));
     chunks.forEach(c => (c.map = null));
