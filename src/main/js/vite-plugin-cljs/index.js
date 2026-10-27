@@ -241,11 +241,78 @@ class ChunkSourceMap {
   }
 }
 
+// Vite's build-import-analysis rewrites dynamic imports' __VITE_PRELOAD__
+// markers in a chunk (and prepends __vite__mapDeps), then composes a source
+// map of that edit with the chunk's: serially, chunk after chunk, a few
+// seconds for large bundles. When the plugin composes every chunk's map again
+// after minifying anyway, Vite rewrites the code without the map, and the
+// minify workers compose the same edit's map (viteEditMap in
+// minify-worker.js). The edit, from the chunk's code before (code) and after
+// (edited): {prefix, updates: [[start, end, text]]}, or null when the edited
+// code isn't exactly such an edit.
+const PRELOAD_MARKER = '__VITE_PRELOAD__';
+const PRELOAD_REPLACEMENT = /^(?:void 0|\[\]|__vite__mapDeps\(\[[\d,]*\]\))/;
+const MAP_DEPS = /^const __vite__mapDeps=[^\n]*\n/;
+
+function preloadEdit(code, edited) {
+  const prefix = MAP_DEPS.exec(edited)?.[0] ?? '';
+  const updates = [];
+  let at = prefix.length, from = 0;
+  for (let i = code.indexOf(PRELOAD_MARKER); ; i = code.indexOf(PRELOAD_MARKER, from)) {
+    const end = i < 0 ? code.length : i;
+    if (!edited.startsWith(code.slice(from, end), at)) return null;
+    at += end - from;
+    if (i < 0) break;
+    const replacement = PRELOAD_REPLACEMENT.exec(edited.slice(at, at + 4096))?.[0];
+    if (replacement === undefined) return null;
+    updates.push([i, i + PRELOAD_MARKER.length, replacement]);
+    at += replacement.length;
+    from = i + PRELOAD_MARKER.length;
+  }
+  return at === edited.length ? { prefix, updates } : null;
+}
+
+// Wraps Vite's build-import-analysis generateBundle (plugin) to rewrite the
+// chunks' preload markers without composing their source maps; pending maps
+// each edited chunk's file name to {code, edit, map} for generateBundle.
+// Chunks whose edit preloadEdit doesn't recognize are rewritten by Vite again
+// from their original code, with their maps.
+function deferPreloadSourceMaps(plugin, pending) {
+  const hook = plugin.generateBundle;
+  const handler = typeof hook === 'function' ? hook : hook.handler;
+  const deferred = async function (outputOptions, bundle) {
+    const chunks = Object.values(bundle).filter(c => c.type === 'chunk' && c.map && c.code.includes(PRELOAD_MARKER));
+    const before = new Map(chunks.map(c => [c, { code: c.code, map: c.map }]));
+    chunks.forEach(c => (c.map = null));
+    try {
+      await handler.call(this, outputOptions, bundle);
+    } finally {
+      chunks.forEach(c => (c.map = before.get(c).map));
+    }
+    const redo = [];
+    for (const [chunk, { code, map }] of before) {
+      if (chunk.code === code) continue;
+      const edit = preloadEdit(code, chunk.code);
+      if (edit) {
+        pending.set(chunk.fileName, { code, edit, map });
+      } else {
+        chunk.code = code;
+        redo.push(chunk);
+      }
+    }
+    if (redo.length) {
+      // the other chunks' markers are rewritten already
+      await handler.call(this, outputOptions, bundle);
+    }
+  };
+  plugin.generateBundle = typeof hook === 'function' ? deferred : { ...hook, handler: deferred };
+}
+
 // Minifies the pruned chunks (codes) in worker threads (minify-worker.js), the
 // largest first, composing their source maps with the bundler's (maps, JSON
 // or null) with @jridgewell/remapping, which the project depends on, at
 // remappingPath. Returns [{code, map, error}].
-async function minifyChunks(oxcPath, remappingPath, fileNames, codes, maps, options) {
+async function minifyChunks(oxcPath, remappingPath, fileNames, codes, maps, edits, options) {
   const order = codes.map((c, i) => i).sort((a, b) => codes[b].length - codes[a].length);
   const results = new Array(codes.length);
   const size = Math.min(codes.length, os.availableParallelism());
@@ -256,7 +323,7 @@ async function minifyChunks(oxcPath, remappingPath, fileNames, codes, maps, opti
         const reply = await new Promise((resolve, reject) => {
           worker.once('message', resolve);
           worker.once('error', reject);
-          worker.postMessage({ id: i, oxcPath, remappingPath, fileName: fileNames[i], code: codes[i], map: maps[i], options });
+          worker.postMessage({ id: i, oxcPath, remappingPath, fileName: fileNames[i], code: codes[i], map: maps[i], edit: edits[i], options });
         });
         worker.removeAllListeners('error');
         if (reply.fatal) throw new Error(reply.fatal);
@@ -333,7 +400,9 @@ export default module.exports;
  */
 export default function cljf(options) {
   const manifestName = options.manifest ?? 'manifest.json';
-  let config, proc, server, minify, root, cwd, outputDir, compiler;
+  let config, proc, server, minify, root, cwd, outputDir, compiler, magicStringPath;
+  // chunks' preload edits whose source maps generateBundle composes
+  const preloadEdits = new Map();
   // the namespaces of the pages' scripts, compiled as main namespaces
   let pageNamespaces = [];
   let compiling = Promise.resolve();
@@ -567,6 +636,18 @@ export default function cljf(options) {
 
     configResolved(resolved) {
       config = resolved;
+      // generateBundle composes every chunk's source map after minifying:
+      // Vite's composition of its preload edits moves there, into workers
+      if (config.command === 'build' && options.prune !== false && minify &&
+          (config.build.sourcemap === true || config.build.sourcemap === 'hidden')) {
+        const importAnalysis = config.plugins.find(p => p.name === 'vite:build-import-analysis');
+        try {
+          magicStringPath = resolveFromProject(config.root, 'magic-string', 'compose source maps');
+        } catch (e) {
+          magicStringPath = null;
+        }
+        if (importAnalysis?.generateBundle && magicStringPath) deferPreloadSourceMaps(importAnalysis, preloadEdits);
+      }
     },
 
     // a watch rebuild, started by the compiler writing its output, bundles
@@ -668,6 +749,10 @@ export default function cljf(options) {
           chunks.map(c => path.basename(c.fileName)),
           pruned.codes,
           chunks.map(c => c.map ? c.map.toString() : null),
+          chunks.map(c => {
+            const pending = preloadEdits.get(c.fileName);
+            return pending && c.map && { magicStringPath, fileName: c.fileName, code: pending.code, ...pending.edit };
+          }),
           {
             module: true,
             compress: true,
