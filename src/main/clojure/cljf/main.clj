@@ -13,9 +13,11 @@
 
   The classes are kept in the per-user cache (CLJF_CACHE_DIR, else
   ~/Library/Caches/cljf, $XDG_CACHE_HOME/cljf or ~/.cache/cljf,
-  %LOCALAPPDATA%\\cljf), under a key of the classpath, the Clojure and Java
-  versions, and the compiler's Clojure sources (their paths, modification
-  times and sizes): a run with another key compiles them again.
+  %LOCALAPPDATA%\\cljf), under a key of the classpath (its jars' paths,
+  modification times and sizes), the Clojure and Java versions, and the
+  compiler's Clojure sources (their paths and contents, so a fresh checkout
+  of the same sources has the same key): a run with another key compiles
+  them again.
   CLJF_COMPILER_CLASSES=false loads the sources."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
@@ -59,21 +61,37 @@
   (let [md (MessageDigest/getInstance "SHA-1")]
     (apply str (map #(format "%02x" %) (.digest md (.getBytes s "UTF-8"))))))
 
+(defn file-hash
+  "The SHA-1 of file f's content, in hex: cache keys identify sources by
+  content, which a checkout (i.e. CI's) keeps and their modification times
+  don't."
+  [^File f]
+  (let [md (MessageDigest/getInstance "SHA-1")]
+    (apply str (map #(format "%02x" %) (.digest md (Files/readAllBytes (.toPath f)))))))
+
+(defn classpath-entry-id
+  "What identifies classpath entry f in a cache key: a jar by its path,
+  modification time and size, a directory by its path (its sources are
+  keyed by content)."
+  [^String entry ^File f]
+  (if (.isDirectory f)
+    [entry "dir"]
+    [entry (.lastModified f) (.length f)]))
+
 (defn- cache-key
   "The key of the compiler's classes, see the namespace doc."
   []
   (let [md   (MessageDigest/getInstance "SHA-1")
         add! (fn [& xs] (.update md (.getBytes (str (string/join "\t" xs) "\n") "UTF-8")))]
     (add! (clojure-version) (System/getProperty "java.version"))
-    (doseq [entry (string/split (System/getProperty "java.class.path") (re-pattern File/pathSeparator))
-            :let [f (io/file entry)]]
-      (add! entry (.lastModified f) (.length f)))
+    (doseq [entry (string/split (System/getProperty "java.class.path") (re-pattern File/pathSeparator))]
+      (apply add! (classpath-entry-id entry (io/file entry))))
     ;; the compiler's and its macros' sources
     (doseq [^File root (distinct (keep source-root ["cljf/esm.clj" "cljs/core.cljs"]))]
       (if (.isDirectory root)
         (doseq [^File f (sort (file-seq root))
                 :when (and (.isFile f) (re-find #"\.clj[c]?$" (.getName f)))]
-          (add! (.getPath f) (.lastModified f) (.length f)))
+          (add! (.getPath f) (file-hash f)))
         (add! (.getPath root) (.lastModified root) (.length root))))
     (apply str (map #(format "%02x" %) (.digest md)))))
 
@@ -162,15 +180,38 @@
   (doto (.getDeclaredMethod DynamicClassLoader "findInMemoryClass" (into-array Class [String]))
     (.setAccessible true)))
 
+(defn- current-class-url
+  "A URL of class file f whose modification time is at least as of: Clojure
+  loads a namespace's class instead of its source only when the class is
+  newer. An entry's key covers its sources' content, so its classes are
+  current for every source not modified since the key was computed, however
+  old their files are (i.e. restored from a CI cache, or sources checked out
+  again). Sources edited later (in a watch) are newer still, and load."
+  ^URL [^File f ^long as-of]
+  (let [file-url    (.toURL (.toURI f))
+        ^URL context nil]
+    (URL. context (str file-url)
+      (proxy [java.net.URLStreamHandler] []
+        (openConnection [^URL _]
+          (let [c (.openConnection file-url)]
+            (proxy [java.net.URLConnection] [file-url]
+              (connect [] (.connect c))
+              (getInputStream [] (.getInputStream c))
+              (getContentLengthLong [] (.getContentLengthLong c))
+              (getLastModified [] (max as-of (.getLastModified c))))))))))
+
 (defn cache-loader
   "A class loader of the classes in cache entry dir, as a DynamicClassLoader
   with dir on its classpath but loading the entry's classes, and finding its
   resources, from dir before asking parent: parent's classpath doesn't have
   them, and searching every jar and directory of a large classpath for each
   of thousands of classes is a big part of a start. Classes parent has too
-  (see write-shadowed!) load parent first. nil if dir lacks .shadowed."
+  (see write-shadowed!) load parent first. Its classes count as current
+  for the sources as they are now (see current-class-url). nil if dir lacks
+  .shadowed."
   ^DynamicClassLoader [^File dir ^ClassLoader parent]
-  (let [shadowed-file (io/file dir ".shadowed")]
+  (let [as-of         (System/currentTimeMillis)
+        shadowed-file (io/file dir ".shadowed")]
     (when (.exists shadowed-file)
       (let [shadowed (edn/read-string (slurp shadowed-file))
             ;; entries written before packs existed get one
@@ -204,11 +245,18 @@
                          ;; only plain relative names can be the entry's files
                          (let [f (when-not (or (.startsWith name "/") (.contains name ".."))
                                    (File. dir name))]
-                           (if (and f (.isFile f)
-                                    (not (and (.endsWith name ".class")
-                                              (contains? shadowed (-> name (subs 0 (- (count name) 6)) (.replace "/" "."))))))
+                           (cond
+                             (not (and f (.isFile f)))
+                             (.getResource parent name)
+
+                             (not (.endsWith name ".class"))
                              (.toURL (.toURI f))
-                             (.getResource parent name)))))]
+
+                             (contains? shadowed (-> name (subs 0 (- (count name) 6)) (.replace "/" ".")))
+                             (.getResource parent name)
+
+                             :else
+                             (current-class-url f as-of)))))]
         (deliver loader dcl)
         (.addURL dcl (.toURL (.toURI dir)))
         dcl))))
@@ -265,10 +313,12 @@
   classes it loaded load more classes from it later (i.e. a watch's), so
   prune! mustn't delete it meanwhile."
   [^File dir]
-  (let [done (io/file dir ".complete")]
+  (let [done  (io/file dir ".complete")
+        touch #(when (.exists done) (.setLastModified done (System/currentTimeMillis)))]
+    ;; now, not only from the holder's thread: a short build may exit first
+    (touch)
     (.scheduleAtFixedRate ^java.util.concurrent.ScheduledExecutorService @holder
-      ^Runnable #(when (.exists done) (.setLastModified done (System/currentTimeMillis)))
-      0 10 java.util.concurrent.TimeUnit/MINUTES)))
+      ^Runnable touch 10 10 java.util.concurrent.TimeUnit/MINUTES)))
 
 (def ^:private keep-entries
   "How many of a cache's most recently used entries prune! keeps however

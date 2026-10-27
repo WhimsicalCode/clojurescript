@@ -405,14 +405,14 @@
 (defn- core-cache-dir
   "The per-user cache's entry of cljs.core's output compiled with opts:
   keyed by the compiler (a hash of its sources when run from them),
-  cljs.core's source, and the options its output depends on."
+  cljs.core's source (its path and content), and the options its output
+  depends on."
   ^File [^File source-file opts]
   (io/file ((requiring-resolve 'cljf.main/cache-dir) "cljs-core")
     ((requiring-resolve 'cljf.main/sha1-hex)
      (pr-str [(util/clojurescript-version)
               (.getCanonicalPath source-file)
-              (.lastModified source-file)
-              (.length source-file)
+              ((requiring-resolve 'cljf.main/file-hash) source-file)
               (into (sorted-map)
                 (-> (ana/build-affecting-options opts)
                     (merge (select-keys opts [:source-map :esm-dts :emit-constants]))
@@ -858,24 +858,27 @@
 (defn- macro-cache-key
   "Identifies the Clojure code macro namespaces load: the classpath, the
   Clojure and Java versions, whether asserts are compiled (:elide-asserts
-  binds *assert*, which Clojure compiles the macro namespaces with), and
-  the path, modification time and size of the jars and of every Clojure
-  source in the classpath directories (except the output directory, which
-  has copies of jars' sources)."
+  binds *assert*, which Clojure compiles the macro namespaces with), the
+  path, modification time and size of the jars, and the path and content
+  of every Clojure source in the classpath directories (except the output
+  directory, which has copies of jars' sources): a fresh checkout of the
+  same sources (i.e. CI's) has the same key."
   [output-dir asserts?]
-  (let [output (.getCanonicalPath (io/file output-dir))
-        md     (java.security.MessageDigest/getInstance "SHA-1")
-        add!   (fn [& xs] (.update md (.getBytes (str (string/join "\t" xs) "\n") "UTF-8")))]
+  (let [output     (.getCanonicalPath (io/file output-dir))
+        md         (java.security.MessageDigest/getInstance "SHA-1")
+        add!       (fn [& xs] (.update md (.getBytes (str (string/join "\t" xs) "\n") "UTF-8")))
+        entry-id   (requiring-resolve 'cljf.main/classpath-entry-id)
+        file-hash  (requiring-resolve 'cljf.main/file-hash)]
     (add! (clojure-version) (System/getProperty "java.version") (util/clojurescript-version)
       (str "assert " (boolean asserts?)))
     (doseq [entry (classpath-entries)
             :let [f (io/file entry)]]
-      (add! entry (.lastModified f) (.length f))
+      (apply add! (entry-id entry f))
       (when (and (.isDirectory f)
                  (not (string/starts-with? (str output File/separator) (str (.getCanonicalPath f) File/separator))))
         (doseq [^File src (sort (file-seq f))
                 :when (and (.isFile src) (re-find #"\.clj[c]?$" (.getName src)))]
-          (add! (.getPath src) (.lastModified src) (.length src)))))
+          (add! (.getPath src) (file-hash src)))))
     (apply str (map #(format "%02x" %) (.digest md)))))
 
 (defn- with-aot-macros
