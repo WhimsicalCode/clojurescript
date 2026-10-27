@@ -7,7 +7,7 @@
 
 set -e
 cd "$(dirname "$0")/.."
-cargo build --release --manifest-path src/main/rust/prune/Cargo.toml
+cargo build --locked --release --manifest-path src/main/rust/prune/Cargo.toml
 platform=$(node -p 'process.platform + "-" + process.arch')
 case "$(uname -s)" in
   Darwin) lib=libcljf_prune.dylib ;;
