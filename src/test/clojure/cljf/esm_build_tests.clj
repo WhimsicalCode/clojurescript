@@ -307,7 +307,22 @@
     (testing "a :release build is a production build, as in shadow-cljs' release mode"
       (is (= "false" (debug? {:mode :release}))))
     (testing ":closure-defines sets it in a :release build too"
-      (is (= "true" (debug? {:mode :release :closure-defines '{goog.DEBUG true}}))))))
+      (is (= "true" (debug? {:mode :release :closure-defines '{goog.DEBUG true}}))))
+    (testing "a nil define doesn't set it (the Vite plugin's compilerOptions write null as nil)"
+      (is (= "false" (debug? {:mode :release :closure-defines '{goog.DEBUG nil}})))
+      (is (= "true" (debug? {:closure-defines '{goog.DEBUG nil}}))))))
+
+(deftest a-test-runner-without-its-runner-fails-clearly
+  (let [dir   (temp-dir)
+        build (fn [test-runner]
+                (try
+                  (esm/build {:output-dir (str (io/file dir "out")) :test-runner test-runner})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e (ex-message e))))]
+    (doseq [test-runner [{:ns 'my.test-runner} {:ns 'my.test-runner :runner nil}
+                         {:ns 'my.test-runner :runner 'start} {:runner 'my.test/start}]]
+      (is (some-> (build test-runner) (string/starts-with? ":test-runner needs :ns"))
+          (pr-str test-runner)))))
 
 (deftest compiled-events-report-the-build-s-outstanding-warnings
   (let [outstanding #'esm/outstanding-warnings

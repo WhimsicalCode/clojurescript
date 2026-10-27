@@ -341,14 +341,16 @@
 
 (defn- normalize-closure-defines
   "Normalizes :closure-defines keys to the munged names goog-define vars are
-  looked up by."
+  looked up by. A nil value doesn't define its name: the default applies."
   [defines]
   (into {}
-    (map (fn [[k v]]
+    (comp
+      (remove (comp nil? val))
+      (map (fn [[k v]]
            [(if (or (symbol? k) (keyword? k))
               (str (comp/munge (symbol (namespace k) (name k))))
               k)
-            v]))
+            v])))
     defines))
 
 (defn- ns-api
@@ -785,8 +787,21 @@
     (and (= :release mode) (not (contains? (:closure-defines opts) "goog.DEBUG")))
     (assoc-in [:closure-defines "goog.DEBUG"] false)))
 
+(defn- check-test-runner
+  "Throws unless :test-runner, when set, names its namespace and its runner
+  (a namespace-qualified symbol)."
+  [{:keys [test-runner] :as opts}]
+  (when (some? test-runner)
+    (let [{:keys [ns runner]} test-runner]
+      (when-not (and (map? test-runner) (simple-symbol? ns) (qualified-symbol? runner))
+        (throw (ex-info (str ":test-runner needs :ns, the namespace generated, and :runner, a "
+                             "namespace-qualified symbol (i.e. my.test/start), not "
+                             (pr-str test-runner))
+                        {:test-runner test-runner})))))
+  opts)
+
 (defn- prepare-opts [opts]
-  (-> (merge default-opts opts)
+  (-> (merge default-opts (check-test-runner opts))
       (update :closure-defines normalize-closure-defines)
       release-defines
       ;; as cljs.closure: keyword and symbol constants are hoisted into a
