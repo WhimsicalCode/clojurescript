@@ -959,82 +959,81 @@
      (with-aot-macros opts #(build* opts compiler-env)))))
 
 (defn- build* [opts compiler-env]
-  (do
-     (with-bindings (assoc (compiler-bindings opts)
-                      #'*generated-sources* (if (:test-runner opts)
-                                              (generate-test-runner opts)
-                                              *generated-sources*)
-                      #'*api-changed* (atom #{})
-                      ;; the classpath doesn't change during a build
-                      #'util/*ns-source-cache* (java.util.concurrent.ConcurrentHashMap.)
-                      #'ana/*parse-ns-cache* (java.util.concurrent.ConcurrentHashMap.))
-       (env/with-compiler-env compiler-env
-         (swap! compiler-env assoc :options opts)
-         (let [start  (System/nanoTime)
-               [preload-add! preload] (when (:parallel-build opts)
-                                        (preload-macro-namespaces (previous-macro-order opts)))
-               ;; With cljs.core's output from the per-user cache, reading its
-               ;; analysis doesn't depend on the build's other namespaces:
-               ;; under :parallel-build it's read while they're found. A
-               ;; compile of it stays after (see #60: compiling it alongside
-               ;; slows both)
-               core-input (when (and (:parallel-build opts) (:core-cache opts true))
-                            (first (find-sources ['cljs.core] (dissoc opts :parallel-build))))
-               core-early (when (and core-input (instance? File (:source-file core-input))
-                                     (restore-core! core-input opts))
-                            (let [pool (Executors/newSingleThreadExecutor)]
-                              (try
-                                (.submit pool ^Callable (bound-fn [] (compile-ns core-input opts)))
-                                (finally
-                                  (.shutdown pool)))))
-               inputs (try
-                        (find-sources (mains opts) opts)
-                        (catch Throwable e
-                          ;; ends the preloader
-                          (when preload-add! (preload-add! nil))
-                          (some-> ^Future core-early (.cancel true))
-                          (throw e)))]
-           ;; lets the compiler know which namespaces are part of the build
-           ;; before they're analyzed
-           (swap! compiler-env assoc ::namespaces (into #{} (map :ns) inputs))
-           (swap! compiler-env update ::ana/data-readers merge (ana/load-data-readers))
-           (write-build-info opts)
-           (let [order (build-macro-order inputs)]
-             (when preload-add!
-               (preload-add! order)
-               (preload-add! nil))
-             (store-macro-order! opts order)
-             ;; cljs.core is analyzed first, the compiler expects its analysis
-             ;; to be available when compiling anything else
-             (if core-early
-               (try
-                 (.get ^Future core-early)
-                 (catch java.util.concurrent.ExecutionException e
-                   (throw (or (.getCause e) e))))
-               (let [core   (first (filter #(= 'cljs.core (:ns %)) inputs))
-                     cache? (and (:core-cache opts true) (instance? File (:source-file core)))]
-                 (when cache? (restore-core! core opts))
-                 (compile-ns core opts)
-                 (when cache? (store-core! core opts))))
-             (let [others (remove #(= 'cljs.core (:ns %)) inputs)]
-               (if (:parallel-build opts)
-                 (compile-parallel others opts)
-                 (doseq [input others]
-                   (compile-ns input opts))))
-             (some-> ^Future preload (.get)))
-           (check-js-entries compiler-env opts)
-           (write-constants! compiler-env opts)
-           (install-goog-shims opts)
-           (install-goog-libs compiler-env opts)
-           (write-package-json opts)
-           (when (seq (:build-hooks opts))
-             (ensure-analyzed! compiler-env inputs opts)
-             (run-hooks! compiler-env inputs opts))
-           (when (:verbose opts)
-             (util/debug-prn
-               (format "Compiled %d namespaces in %.1fs" (count inputs)
-                 (/ (- (System/nanoTime) start) 1e9))))
-           (map :ns inputs))))))
+  (with-bindings (assoc (compiler-bindings opts)
+                   #'*generated-sources* (if (:test-runner opts)
+                                           (generate-test-runner opts)
+                                           *generated-sources*)
+                   #'*api-changed* (atom #{})
+                   ;; the classpath doesn't change during a build
+                   #'util/*ns-source-cache* (java.util.concurrent.ConcurrentHashMap.)
+                   #'ana/*parse-ns-cache* (java.util.concurrent.ConcurrentHashMap.))
+    (env/with-compiler-env compiler-env
+      (swap! compiler-env assoc :options opts)
+      (let [start  (System/nanoTime)
+            [preload-add! preload] (when (:parallel-build opts)
+                                     (preload-macro-namespaces (previous-macro-order opts)))
+            ;; With cljs.core's output from the per-user cache, reading its
+            ;; analysis doesn't depend on the build's other namespaces:
+            ;; under :parallel-build it's read while they're found. A
+            ;; compile of it stays after (see #60: compiling it alongside
+            ;; slows both)
+            core-input (when (and (:parallel-build opts) (:core-cache opts true))
+                         (first (find-sources ['cljs.core] (dissoc opts :parallel-build))))
+            core-early (when (and core-input (instance? File (:source-file core-input))
+                                  (restore-core! core-input opts))
+                         (let [pool (Executors/newSingleThreadExecutor)]
+                           (try
+                             (.submit pool ^Callable (bound-fn [] (compile-ns core-input opts)))
+                             (finally
+                               (.shutdown pool)))))
+            inputs (try
+                     (find-sources (mains opts) opts)
+                     (catch Throwable e
+                       ;; ends the preloader
+                       (when preload-add! (preload-add! nil))
+                       (some-> ^Future core-early (.cancel true))
+                       (throw e)))]
+        ;; lets the compiler know which namespaces are part of the build
+        ;; before they're analyzed
+        (swap! compiler-env assoc ::namespaces (into #{} (map :ns) inputs))
+        (swap! compiler-env update ::ana/data-readers merge (ana/load-data-readers))
+        (write-build-info opts)
+        (let [order (build-macro-order inputs)]
+          (when preload-add!
+            (preload-add! order)
+            (preload-add! nil))
+          (store-macro-order! opts order)
+          ;; cljs.core is analyzed first, the compiler expects its analysis
+          ;; to be available when compiling anything else
+          (if core-early
+            (try
+              (.get ^Future core-early)
+              (catch java.util.concurrent.ExecutionException e
+                (throw (or (.getCause e) e))))
+            (let [core   (first (filter #(= 'cljs.core (:ns %)) inputs))
+                  cache? (and (:core-cache opts true) (instance? File (:source-file core)))]
+              (when cache? (restore-core! core opts))
+              (compile-ns core opts)
+              (when cache? (store-core! core opts))))
+          (let [others (remove #(= 'cljs.core (:ns %)) inputs)]
+            (if (:parallel-build opts)
+              (compile-parallel others opts)
+              (doseq [input others]
+                (compile-ns input opts))))
+          (some-> ^Future preload (.get)))
+        (check-js-entries compiler-env opts)
+        (write-constants! compiler-env opts)
+        (install-goog-shims opts)
+        (install-goog-libs compiler-env opts)
+        (write-package-json opts)
+        (when (seq (:build-hooks opts))
+          (ensure-analyzed! compiler-env inputs opts)
+          (run-hooks! compiler-env inputs opts))
+        (when (:verbose opts)
+          (util/debug-prn
+            (format "Compiled %d namespaces in %.1fs" (count inputs)
+              (/ (- (System/nanoTime) start) 1e9))))
+        (map :ns inputs)))))
 
 (def ^:private stdout
   "The process' standard output, events go there from any thread, i.e. the

@@ -5310,9 +5310,9 @@ x                          (not (contains? ret :info)))
                    (str ";; Analyzed by ClojureScript " (util/clojurescript-version) "\n"
                      (pr-str analysis)))
           "json" (when-let [{:keys [writer write]} @transit]
-                   ;; serialized in memory, written in one go: the JSON
-                   ;; writer writes in small pieces, each a system call on
-                   ;; the file, which parallel builds' threads contend on
+                   ;; serialized in memory, written in one go: parallel
+                   ;; builds spent most of their system time in these writes
+                   ;; while transit wrote to the file as it serialized
                    (let [bos (java.io.ByteArrayOutputStream. 65536)]
                      (write (writer bos :json transit-write-opts) (keep-defs-arglists-meta analysis))
                      (with-open [os (java.io.FileOutputStream. cache-file)]
