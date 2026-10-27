@@ -216,7 +216,7 @@
   [nm]
   (str (munge nm js-reserved)))
 
-(declare esm-goog-shim-exports)
+(declare esm-goog-shim-exports valid-define-value?)
 
 (defn- munge-esm-var
   ([ns nm] (munge-esm-var ns nm js-reserved))
@@ -741,7 +741,9 @@
         (and *esm-emitting* (contains? '#{goog/DEBUG js/goog.DEBUG} var-name))
         (when-not (= :statement (:context env))
           (emit-wrap env
-            (emits (pr-str (get-in options [:closure-defines "goog.DEBUG"] true)))))
+            ;; true unless defined as a value goog-define accepts (not nil)
+            (let [v (get-in options [:closure-defines "goog.DEBUG"])]
+              (emits (pr-str (if (valid-define-value? v) v true))))))
 
         ;; a direct eval in a module defeats tree shaking and renaming of all
         ;; of the module's bindings

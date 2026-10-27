@@ -4,7 +4,9 @@
 // (nreplPort is :nrepl-port), others as they are ('nrepl-port', ':nrepl-port').
 // Strings starting with : are keywords, with ' symbols, others strings. null
 // is nil, and so is undefined, except in maps, which leave out keys whose value
-// is undefined: `repl: dev ? { nreplPort: 0 } : undefined` doesn't set :repl.
+// is undefined: `repl: dev ? { nreplPort: 0 } : undefined` doesn't set :repl,
+// leaving a config file profile's, while `repl: null` (or false) unsets it. A
+// null define doesn't set it: the define's default applies.
 
 // The options whose map keys are names rather than options, written as they
 // are: :closure-defines' (goog.DEBUG), :js-entries' entry names and their
