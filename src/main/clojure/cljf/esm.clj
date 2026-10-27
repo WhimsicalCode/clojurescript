@@ -419,13 +419,21 @@
               ((requiring-resolve 'cljf.main/file-hash) source-file)
               (into (sorted-map)
                 (-> (ana/build-affecting-options opts)
-                    (merge (select-keys opts [:source-map :esm-dts :emit-constants]))
+                    (merge (select-keys opts [:source-map :source-map-path :source-map-pretty-print
+                                              :source-map-timestamp :esm-dts :emit-constants]))
                     (update :closure-defines #(into (sorted-map) %))))]))))
 
-(defn- json-path
-  "A path as the source map's JSON writes it."
-  [path]
-  (string/replace (json/write-str path) "/" "\\/"))
+(defn- rewrite-map-file
+  "Source map JSON map-json with the module path old (its \"file\") replaced
+  by new, written as the map writes it: compact maps escape slashes, pretty
+  printed ones (:source-map-pretty-print) don't. nil if map-json doesn't
+  have it."
+  [^String map-json old new]
+  (some (fn [escape?]
+          (let [from (json/write-str old :escape-slash escape?)]
+            (when (string/includes? map-json from)
+              (string/replace map-json from (json/write-str new :escape-slash escape?)))))
+    [true false]))
 
 (defn- restore-core!
   "When the output directory lacks cljs.core's output (a cold build), copies
@@ -438,20 +446,25 @@
         dest (output-file 'cljs.core opts)]
     (when (and (.exists (io/file dir ".complete")) (not (.exists dest)))
       (let [old   (slurp (io/file dir "file"))
-            mtime (.lastModified ^File source-file)]
-        ((requiring-resolve 'cljf.main/hold!) dir)
-        (util/mkdirs dest)
-        (doseq [ext core-exts
-                :let [from (io/file dir (str "core" ext))
-                      to   (core-output opts ext)]]
-          (if (= ext ".js.map")
-            ;; the map names its module by absolute path
-            (spit to (string/replace (slurp from) (json-path old) (json-path (comp/url-path dest))))
-            (io/copy from to))
-          ;; as compile-file leaves them
-          (when (#{".js" ".cljs.cache.json"} ext)
-            (.setLastModified to mtime)))
-        true))))
+            mtime (.lastModified ^File source-file)
+            ;; the map names its module by absolute path; cljs.core is
+            ;; compiled instead if it can't be renamed
+            map   (when (some #{".js.map"} core-exts)
+                    (or (rewrite-map-file (slurp (io/file dir "core.js.map")) old (comp/url-path dest))
+                        ::stale))]
+        (when-not (= ::stale map)
+          ((requiring-resolve 'cljf.main/hold!) dir)
+          (util/mkdirs dest)
+          (doseq [ext core-exts
+                  :let [from (io/file dir (str "core" ext))
+                        to   (core-output opts ext)]]
+            (if (= ext ".js.map")
+              (spit to map)
+              (io/copy from to))
+            ;; as compile-file leaves them
+            (when (#{".js" ".cljs.cache.json"} ext)
+              (.setLastModified to mtime)))
+          true)))))
 
 (defn- store-core!
   "Copies cljs.core's output this build compiled to the per-user cache,
