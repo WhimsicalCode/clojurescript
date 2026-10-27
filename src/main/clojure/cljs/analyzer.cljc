@@ -4914,6 +4914,17 @@ x                          (not (contains? ret :info)))
          (symbol (str "cljs.user." name (util/content-sha full-name 7)))))))
 
 #?(:clj
+   (def ^:dynamic *parse-ns-cache*
+     "A java.util.concurrent.ConcurrentHashMap caching parse-ns of source files
+     while bound, i.e. for the duration of one cljf.esm build, in which the
+     compiler parses each namespace's ns form several times. Only calls
+     without side effects are cached, by the file's path and modification
+     time. nil, the default, doesn't cache."
+     nil))
+
+#?(:clj (declare parse-ns*))
+
+#?(:clj
    (defn ^:dynamic parse-ns
      "Helper for parsing only the essential namespace information from a
       ClojureScript source file and returning a cljs.closure/IJavaScript compatible
@@ -4930,6 +4941,28 @@ x                          (not (contains? ret :info)))
           (:options @env/*compiler*))))
      ([src opts] (parse-ns src nil opts))
      ([src dest opts]
+      (let [^java.util.concurrent.ConcurrentHashMap cache *parse-ns-cache*]
+        (if (and cache (instance? File src)
+                 (not (false? (:restore opts)))
+                 (not (:analyze-deps opts)) (not (:load-macros opts)) (not (:macro-infer opts)))
+          (let [^File src src
+                k   [(.getPath src) (.lastModified src) (:macros-ns opts)
+                     (boolean (get-in @env/*compiler* [:options :emit-constants]))]
+                ret (or (.get cache k)
+                        (let [ret (parse-ns* src nil opts)]
+                          (.put cache k ret)
+                          ret))]
+            ;; as parse-ns* returns them given dest
+            (cond-> ret
+              dest (assoc :file dest)
+              (and dest (.exists ^File dest))
+              (assoc :lines (with-open [reader (io/reader dest)]
+                              (-> reader line-seq count)))))
+          (parse-ns* src dest opts))))))
+
+#?(:clj
+   (defn- parse-ns*
+     [src dest opts]
       (ensure
         (let [src (if (symbol? src)
                     (util/ns->source src)
@@ -5016,7 +5049,7 @@ x                          (not (contains? ret :info)))
             (not (contains? ijs :ns))
             (merge
               {:ns (gen-user-ns src)
-               :provides [(gen-user-ns src)]})))))))
+               :provides [(gen-user-ns src)]}))))))
 
 #?(:clj
    (defn- cache-analysis-ext

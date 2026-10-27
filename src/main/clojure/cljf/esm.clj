@@ -750,7 +750,8 @@
                                               *generated-sources*)
                       #'*api-changed* (atom #{})
                       ;; the classpath doesn't change during a build
-                      #'util/*ns-source-cache* (java.util.concurrent.ConcurrentHashMap.))
+                      #'util/*ns-source-cache* (java.util.concurrent.ConcurrentHashMap.)
+                      #'ana/*parse-ns-cache* (java.util.concurrent.ConcurrentHashMap.))
        (env/with-compiler-env compiler-env
          (swap! compiler-env assoc :options opts)
          (let [start  (System/nanoTime)
