@@ -60,8 +60,11 @@ export interface CompilerOptions {
   esmBeforeLoad?: CljSymbol[];
   /** Source directories to watch, defaults to the classpath directories. */
   watchDirs?: string[];
-  /** The dev server's nREPL server: `{ nreplPort: 0 }` picks a free port, written to the port files. */
-  repl?: false | { nreplPort?: number; nreplHost?: string; portFiles?: string[] };
+  /**
+   * The dev server's nREPL server: `{ nreplPort: 0 }` picks a free port, written to the port files.
+   * `middleware` adds nREPL middleware, by var name: `['cider.nrepl/cider-middleware']`.
+   */
+  repl?: false | { nreplPort?: number; nreplHost?: string; portFiles?: string[]; middleware?: string[] };
   /** A generated test runner requiring the test namespaces. */
   testRunner?: { ns: CljSymbol; nsRegexp?: string; runner: CljSymbol };
   [option: string]: EdnValue | undefined;

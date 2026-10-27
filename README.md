@@ -136,7 +136,7 @@ Options are EDN maps, `@file.edn` to read them from a file, and `:profile` keywo
 | `:checked-set-literals false` | set literals of runtime values collapse duplicates instead of throwing (before CLJS-3415) |
 | `:esm-hmr` | hot reloading code, enabled by `watch` |
 | `:esm-repl` | modules register themselves for the REPL, which main namespaces load first, enabled by `watch` with `:esm-hmr` |
-| `:repl` | `{:nrepl-port 0 :nrepl-host "127.0.0.1" :port-files [".nrepl-port"] :middleware []}`, `watch` starts an nREPL server (`0` picks a port), writes its port to the port files no other live server's port is in, and deletes them on exit; needs nREPL on the classpath. `:middleware` adds nREPL middleware, as does the `:middleware` of nREPL's configuration files, the project's `.nrepl.edn` and the user's `~/.nrepl/nrepl.edn` (see [Editors](#editors)) |
+| `:repl` | `{:nrepl-port 0 :nrepl-host "127.0.0.1" :port-files [".nrepl-port"] :middleware []}`, `watch` starts an nREPL server (`0` picks a port), writes its port to the port files no other live server's port is in, and deletes them on exit; needs nREPL on the classpath. `:middleware` adds nREPL middleware (names of vars, or of vars holding collections of names), as does the `:middleware` of nREPL's configuration, its `nrepl.edn` (i.e. `~/.nrepl/nrepl.edn`) and the project's `.nrepl.edn`; their other keys don't apply (see [Editors](#editors)) |
 | `:esm-dts false` | don't write `.d.ts` files |
 | `:esm-after-load` / `:esm-before-load` | fns run around hot reloads, like `^:dev/after-load` |
 | `:watch-dirs` | source directories, defaults to the classpath directories without the compiler's own |
@@ -289,10 +289,10 @@ The launcher and the Vite plugin start the compiler with `cljf.main`, `cljf.esm`
 
 #### Editors
 
-Editors connect to the nREPL server in `.nrepl-port`, then evaluate `(cljf.esm.repl/repl)` in a session to switch it to ClojureScript. For CIDER, add `cider/cider-nrepl` to `deps.edn` and its middleware to the server, in the Vite plugin's options, in `cljs.edn`, or in nREPL's `.nrepl.edn` (`{:middleware [cider.nrepl/cider-middleware]}`, whose keys replace those of `~/.nrepl/nrepl.edn`):
+Editors connect to the nREPL server in `.nrepl-port`, then evaluate `(cljf.esm.repl/repl)` in a session to switch it to ClojureScript. For CIDER, add `cider/cider-nrepl` to `deps.edn` and its middleware to the server, in the Vite plugin's options, in `cljs.edn`, or in nREPL's configuration: the project's `.nrepl.edn` (`{:middleware [cider.nrepl/cider-middleware]}`), whose keys replace those of the user's `nrepl.edn` (`~/.nrepl/nrepl.edn`, or under `$NREPL_CONFIG_DIR` or `$XDG_CONFIG_HOME/nrepl`). Only their `:middleware` applies:
 
 ```js
-compilerOptions: { repl: { 'nrepl-port': 0, middleware: ['cider.nrepl/cider-middleware'] } }
+compilerOptions: { repl: { nreplPort: 0, middleware: ['cider.nrepl/cider-middleware'] } }
 ```
 
 ```clojure
@@ -300,7 +300,7 @@ compilerOptions: { repl: { 'nrepl-port': 0, middleware: ['cider.nrepl/cider-midd
 {:repl {:nrepl-port 0 :middleware [cider.nrepl/cider-middleware]}}
 ```
 
-Middleware that doesn't load is left out with a warning. With cider-nrepl 0.61 or later, a session switched to ClojureScript completes and looks up (`info`, `eldoc`) ClojureScript namespaces and vars from the build's compiler environment, through clj-suitable. Completions of JavaScript properties (`js/document.getE…`, CIDER's `cider-enhanced-cljs-completion-p`) are clj-suitable's too: its piggieback and shadow-cljs support doesn't cover these sessions, so they evaluate its completion forms with `cljf.esm.repl/cljs-eval`, after requiring `suitable.js-introspection` in the runtime.
+Middleware that doesn't load is left out with a warning, as is a configuration file that can't be read. With cider-nrepl 0.61 or later, a session switched to ClojureScript completes and looks up (`info`, `eldoc`) ClojureScript namespaces and vars from the build's compiler environment, through clj-suitable. Completions of JavaScript properties (`js/document.getE…`, CIDER's `cider-enhanced-cljs-completion-p`) are clj-suitable's too: its piggieback and shadow-cljs support doesn't cover these sessions, so they evaluate its completion forms with `cljf.esm.repl/cljs-eval`, after requiring `suitable.js-introspection` once in each runtime (a runtime it doesn't load in has no property completions, with one warning). cider-nrepl 0.63 or later is recommended: the clj-suitable of earlier releases requires it again for every completion. Cider's ops see a copy of the compiler environment taken for each message, so a macroexpansion can't change the build's while it recompiles.
 
 ### Migrating from shadow-cljs
 
