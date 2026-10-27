@@ -10,7 +10,7 @@ import fs from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { compilerCommand } from '../cljf/launcher.js';
@@ -142,10 +142,6 @@ function resolveFromProject(root, specifier, purpose) {
     if (resolved) return resolved;
   }
   throw new Error(`${specifier} not found, can not ${purpose}`);
-}
-
-async function loadFromProject(root, specifier, purpose) {
-  return import(pathToFileURL(resolveFromProject(root, specifier, purpose)).href);
 }
 
 // The native summarizer (src/main/rust/prune, script/build-native-prune) for
@@ -735,7 +731,6 @@ export default function cljf(options) {
       if (options.prune !== false) {
         const start = Date.now();
         const oxcPath = resolveFromProject(config.root, 'rolldown/utils', 'prune and minify');
-        const oxc = await import(pathToFileURL(oxcPath).href);
         const pruned = pruneChunks(chunks.map(c => c.code), await summarizeChunks(oxcPath, chunks));
         const pruneMs = Date.now() - start;
         const renames = propertyRenames(pruned.codes);

@@ -1008,7 +1008,7 @@
           (if core-early
             (try
               (.get ^Future core-early)
-              (catch java.util.concurrent.ExecutionException e
+              (catch ExecutionException e
                 (throw (or (.getCause e) e))))
             (let [core   (first (filter #(= 'cljs.core (:ns %)) inputs))
                   cache? (and (:core-cache opts true) (instance? File (:source-file core)))]
