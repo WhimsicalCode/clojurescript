@@ -370,37 +370,89 @@
       (swap! *api-changed* conj ns))
     ret))
 
+(definterface ICompileTask
+  (^long taskIndex []))
+
+(defn- task-index ^long [^ICompileTask t]
+  (.taskIndex t))
+
 (defn- compile-parallel
   "Compiles inputs (in dependency order) with a pool of threads, a namespace
-  is compiled once all its dependencies have been."
+  is compiled once all its dependencies have been. A namespace is only
+  submitted to the pool once its dependencies are compiled: threads never
+  wait for each other, every thread compiles while there's a namespace
+  ready. Ready namespaces are compiled in dependency order (earliest
+  first), as they were started before: macros may read the analysis of
+  namespaces they don't require (i.e. sci's copy-var, of cljs.analyzer.api).
+  After a failure, the namespaces not requiring the failed one are compiled
+  still; throws the first failure once they have been."
   [inputs opts]
-  (let [threads (or (:parallel-build-threads opts)
-                    (.availableProcessors (Runtime/getRuntime)))
-        pool    (Executors/newFixedThreadPool threads)
-        futures (atom {})]
+  (let [threads    (or (:parallel-build-threads opts)
+                       (.availableProcessors (Runtime/getRuntime)))
+        pool       (java.util.concurrent.ThreadPoolExecutor. (int threads) (int threads) 0
+                     java.util.concurrent.TimeUnit/MILLISECONDS
+                     (java.util.concurrent.PriorityBlockingQueue.))
+        by-ns      (into {} (map (juxt :ns identity)) inputs)
+        ;; the dependencies earlier in the order, like waiting for the
+        ;; namespaces submitted before (a cycle doesn't wait forever)
+        index      (into {} (map-indexed (fn [i {:keys [ns]}] [ns i])) inputs)
+        deps       (into {}
+                     (map (fn [{:keys [ns requires]}]
+                            [ns (into #{} (comp (remove string?) (map symbol)
+                                            (filter #(when-let [i (index %)] (< i (index ns)))))
+                                  requires)]))
+                     inputs)
+        dependents (reduce-kv (fn [m ns ds] (reduce #(update %1 %2 (fnil conj []) ns) m ds)) {} deps)
+        remaining  (into {} (map (fn [[ns ds]] [ns (java.util.concurrent.atomic.AtomicInteger. (count ds))])) deps)
+        pending    (java.util.concurrent.atomic.AtomicInteger. (count inputs))
+        done       (java.util.concurrent.CountDownLatch. 1)
+        failure    (atom nil)
+        finish!    (fn [] (when (zero? (.decrementAndGet pending)) (.countDown done)))
+        ;; the namespaces requiring a failed one, transitively, are never
+        ;; ready: counted as finished
+        skipped    (java.util.concurrent.ConcurrentHashMap/newKeySet)
+        skip!      (fn skip! [ns]
+                     (doseq [d (dependents ns)]
+                       (when (.add ^java.util.Set skipped d)
+                         (skip! d)
+                         (finish!))))
+        submit     (fn submit [ns]
+                     (let [i    (long (index ns))
+                           task (bound-fn []
+                                  (try
+                                    (compile-ns (by-ns ns) opts)
+                                    (doseq [d (dependents ns)]
+                                      (when (zero? (.decrementAndGet ^java.util.concurrent.atomic.AtomicInteger (remaining d)))
+                                        (submit d)))
+                                    (catch Throwable e
+                                      (compare-and-set! failure nil e)
+                                      (skip! ns)))
+                                  (finish!))]
+                       (.execute pool
+                         (reify
+                           Runnable
+                           (run [_] (task))
+                           ICompileTask
+                           (taskIndex [_] i)
+                           Comparable
+                           (compareTo [_ other]
+                             (Long/compare i (long (task-index other))))))))]
     (try
-      (doseq [{:keys [ns requires] :as input} inputs]
-        (let [deps (keep #(get @futures (symbol %)) (remove string? requires))
-              f    (.submit pool
-                     ^Callable
-                     (bound-fn []
-                       (doseq [^Future d deps] (.get d))
-                       (compile-ns input opts)))]
-          (swap! futures assoc ns f)))
-      (doseq [{:keys [ns]} inputs]
-        (.get ^Future (get @futures ns)))
-      (catch ExecutionException e
-        ;; the namespace's failure, not the futures waiting for it
-        (throw (loop [^Throwable e e]
-                 (if (and (instance? ExecutionException e) (ex-cause e))
-                   (recur (ex-cause e))
-                   e))))
+      (if (seq inputs)
+        (do
+          (doseq [{:keys [ns]} inputs
+                  :when (empty? (deps ns))]
+            (submit ns))
+          (.await done))
+        nil)
+      (when-let [e @failure]
+        (throw e))
       (finally
         ;; after a failure, the namespaces not requiring the failed one are
         ;; compiled still (i.e. recompiled for a changed api, *api-changed*
-        ;; doesn't outlive the build), the ones requiring it fail getting
-        ;; it, and all of them finish before the build returns, i.e. before
-        ;; the watcher's next build
+        ;; doesn't outlive the build), the ones requiring it are skipped,
+        ;; and all of them finish before the build returns, i.e. before the
+        ;; watcher's next build
         (.shutdown pool)
         (.awaitTermination pool 1 TimeUnit/HOURS)))))
 
