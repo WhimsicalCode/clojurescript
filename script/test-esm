@@ -2,9 +2,11 @@
 
 # Runs the runtime test suite compiled to ES modules (:module-format :esm,
 # see cljf.esm) with Node.js, unbundled, and the tests of cljf.esm builds and
-# their REPL.
+# their REPL, with its nREPL server and cider-nrepl's middleware.
 
-if ! clojure -Sdeps '{:aliases {:esm-build-test {:extra-paths ["src/test/clojure" "src/test/esm_repl"]}}}' \
+if ! clojure -Sdeps '{:aliases {:esm-build-test {:extra-paths ["src/test/clojure" "src/test/esm_repl"]
+                                              :extra-deps {nrepl/nrepl {:mvn/version "1.7.0"}
+                                                           cider/cider-nrepl {:mvn/version "0.63.1"}}}}}' \
        -M:esm-build-test -e "(require 'cljf.esm-build-tests 'cljf.esm-repl-tests)
                              (let [{:keys [fail error]} (clojure.test/run-tests 'cljf.esm-build-tests 'cljf.esm-repl-tests)]
                                (System/exit (if (zero? (+ fail error)) 0 1)))"; then

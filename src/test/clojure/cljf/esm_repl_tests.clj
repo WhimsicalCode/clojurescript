@@ -8,16 +8,22 @@
 
 (ns cljf.esm-repl-tests
   "The REPL of cljf.esm builds: forms compiled in REPL mode, and evaluated
-  by the REPL runtime under Node.js."
+  by the REPL runtime under Node.js, also through the nREPL server with
+  cider-nrepl's middleware."
   (:require [cljs.analyzer :as ana]
             [cljs.compiler :as comp]
             [cljs.env :as env]
             [cljf.esm :as esm]
             [cljf.esm.repl :as repl]
+            [cljf.esm.repl.nrepl :as repl.nrepl]
             [cljs.vendor.clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as string]
-            [clojure.test :refer [deftest is testing use-fixtures]])
+            [clojure.test :refer [deftest is testing use-fixtures]]
+            [nrepl.config]
+            [nrepl.core :as nrepl]
+            [nrepl.middleware]
+            [nrepl.transport])
   (:import [java.io BufferedReader File InputStreamReader]
            [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]
@@ -232,3 +238,90 @@
     (is (string/starts-with? (:error (repl/cljs-eval "#=(+ 1 2)")) "Could not read")))
   (testing "no such runtime"
     (is (= "No runtime 5, see (cljf.esm.repl/runtimes)" (:error (repl/cljs-eval "1" {:runtime-id 5}))))))
+
+(def ^:dynamic *test-middleware* nil)
+
+(defn- wrap-test
+  "Middleware the tests name, answering a test op."
+  [h]
+  (fn [msg]
+    (if (= "cljf-test" (:op msg))
+      (nrepl.transport/respond-to msg {:status #{:done} :answer "yes"})
+      (h msg))))
+
+(nrepl.middleware/set-descriptor! #'wrap-test {:handles {"cljf-test" {}}})
+
+(def test-middleware-names
+  "A var holding middleware names, as cider.nrepl/cider-middleware."
+  ['cljf.esm-repl-tests/wrap-test "cljf.esm-repl-tests/wrap-test"])
+
+(deftest resolves-nrepl-middleware
+  (let [server-middleware #'repl.nrepl/server-middleware
+        err (java.io.StringWriter.)]
+    (testing "names, strings, vars holding names, without duplicates; middleware that doesn't load is left out"
+      (with-redefs [nrepl.config/config {:middleware ['cljf.esm-repl-tests/wrap-test 'no.such.ns/wrap]}]
+        (let [[names vars] (binding [*err* err]
+                             (server-middleware ['cljf.esm-repl-tests/test-middleware-names "cljf.esm-repl-tests/nope"]))]
+          (is (= ['cljf.esm-repl-tests/test-middleware-names 'cljf.esm-repl-tests/wrap-test] names))
+          (is (= [#'wrap-test] vars))
+          (is (string/includes? (str err) "nREPL middleware cljf.esm-repl-tests/nope not loaded"))
+          (is (string/includes? (str err) "nREPL middleware no.such.ns/wrap not loaded")))))
+    (testing "cider's middleware adds JavaScript property completion"
+      (with-redefs [nrepl.config/config {}]
+        (let [[_ vars] (server-middleware ['cider.nrepl/cider-middleware])]
+          (is (some #{#'repl.nrepl/wrap-cljs-complete} vars))
+          (is (= (count vars) (count (distinct vars)))))))))
+
+(defn- with-nrepl
+  "Calls f with a fn sending a message to a session of an nREPL server with
+  middleware, returning its combined responses."
+  [middleware f]
+  (let [server (with-redefs [nrepl.config/config {}]
+                 (repl.nrepl/start-server! {:nrepl-port 0 :port-files [] :middleware middleware}))]
+    (try
+      (with-open [conn (nrepl/connect :port (:port server))]
+        (let [session (nrepl/client-session (nrepl/client conn 30000))]
+          (f #(nrepl/combine-responses (nrepl/message session (if (string? %) {:op "eval" :code %} %))))))
+      (finally
+        (.close ^java.io.Closeable server)))))
+
+(deftest nrepl-sessions
+  (with-nrepl ['cljf.esm-repl-tests/wrap-test]
+    (fn [send]
+      (testing "configured middleware"
+        (is (= "yes" (:answer (send {:op "cljf-test"})))))
+      (testing "a session switched to ClojureScript evaluates in the runtime"
+        (send "(cljf.esm.repl/repl)")
+        (is (= ["\"cljs\""] (:value (send "(if (exists? js/process) \"cljs\" \"clj\")")))))
+      (testing "and Clojure again after :cljs/quit"
+        (is (= [":cljs/quit"] (:value (send ":cljs/quit"))))
+        (is (= ["3"] (:value (send "(+ 1 2)")))))
+      (testing "it switches to ClojureScript again"
+        (send "(cljf.esm.repl/repl)")
+        (is (= ["\"cljs\""] (:value (send "(if (exists? js/process) \"cljs\" \"clj\")"))))
+        (send ":cljs/quit")))))
+
+(deftest cider-nrepl-in-cljs-sessions
+  (with-nrepl ['cider.nrepl/cider-middleware]
+    (fn [send]
+      (let [candidates (fn [msg] (set (map :candidate (:completions (send (assoc msg :op "complete"))))))]
+        (testing "Clojure sessions complete Clojure"
+          (is (contains? (candidates {:prefix "clojure.core/inte" :ns "user"}) "clojure.core/interleave")))
+        (send "(cljf.esm.repl/repl)")
+        (testing "the build's vars"
+          (is (contains? (candidates {:prefix "call-" :ns "esm-repl.app"}) "call-g")))
+        (testing "JavaScript properties of the runtime, asked for"
+          (is (= #{"js/process.version" "js/process.versions"}
+                 (candidates {:prefix "js/process.ver" :ns "cljs.user" :enhanced-cljs-completion? "t"})))
+          (is (= #{"js/process.version" "js/process.versions"}
+                 (candidates {:prefix "js/process.ver" :ns "esm-repl.app" :enhanced-cljs-completion? "t"})))
+          (is (= #{".-version" ".-versions"}
+                 (candidates {:prefix ".-ver" :ns "cljs.user" :context "(__prefix__ js/process)" :enhanced-cljs-completion? "t"})))
+          (is (empty? (candidates {:prefix "js/process.ver" :ns "cljs.user"}))))
+        (testing "info"
+          (let [{:keys [name ns file]} (send {:op "info" :sym "call-g" :ns "esm-repl.app"})]
+            (is (= ["call-g" "esm-repl.app"] [name ns]))
+            (is (string/ends-with? file "esm_repl/app.cljs"))))
+        (testing "macroexpansion, in a copy of the compiler environment"
+          (is (= "(if 1 (do 2))" (:expansion (send {:op "macroexpand" :code "(when 1 2)" :ns "esm-repl.app"})))))
+        (send ":cljs/quit")))))
