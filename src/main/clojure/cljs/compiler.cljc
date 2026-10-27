@@ -117,21 +117,39 @@
 
 #?(:clj
    (def ^:private ns-first-segments-cache
-     "[compiler-env namespace-count first-segments], the first segments of the
-     analyzed namespaces of a compiler env, recomputed as namespaces are
-     added: find-ns-starts-with runs for every local munged."
+     "[compiler-env namespaces first-segments], the first segments of the
+     analyzed namespaces of a compiler env: find-ns-starts-with runs for every
+     local munged. Updated as namespaces are added from the ones new since,
+     by one thread at a time: a parallel build adds thousands, each a full
+     recomputation on every thread munging meanwhile otherwise."
      (atom nil)))
 
 #?(:clj
    (defn- ns-first-segments [cenv]
      (let [nss (::ana/namespaces @cenv)
-           n   (count nss)
-           [e c segs] @ns-first-segments-cache]
-       (if (and (identical? e cenv) (== c n))
+           [e cached segs] @ns-first-segments-cache]
+       (if (and (identical? e cenv) (== (count cached) (count nss)))
          segs
-         (let [segs (into #{} (map get-first-ns-segment) (keys nss))]
-           (reset! ns-first-segments-cache [cenv n segs])
-           segs)))))
+         (locking ns-first-segments-cache
+           (let [nss (::ana/namespaces @cenv)
+                 [e cached segs] @ns-first-segments-cache]
+             (if (and (identical? e cenv) (== (count cached) (count nss)))
+               segs
+               (let [;; the segments of namespaces added since, and how many:
+                     ;; when every cached namespace is still there (none were
+                     ;; removed), the cached segments plus these are all
+                     [added n] (when (identical? e cenv)
+                                 (reduce-kv
+                                   (fn [[segs n :as acc] ns _]
+                                     (if (contains? cached ns)
+                                       acc
+                                       [(conj segs (get-first-ns-segment ns)) (inc n)]))
+                                   [segs 0] nss))
+                     segs (if (and added (== (count cached) (- (count nss) n)))
+                            added
+                            (into #{} (map get-first-ns-segment) (keys nss)))]
+                 (reset! ns-first-segments-cache [cenv nss segs])
+                 segs))))))))
 
 (defn ^:dynamic find-ns-starts-with [needle]
   #?(:clj
@@ -2912,7 +2930,9 @@
                      version (util/clojurescript-version)]
                  (and version (not= version version')))
                (and opts
-                    (not (and (io/resource "cljs/core.aot.js") (= 'cljs.core ns)))
+                    ;; ns first: the resource lookup searches the classpath
+                    ;; under its class loader's lock, for every namespace
+                    (not (and (= 'cljs.core ns) (io/resource "cljs/core.aot.js")))
                     (not= (ana/build-affecting-options opts)
                           (ana/build-affecting-options (util/build-options dest))))
                (and opts (:source-map opts)

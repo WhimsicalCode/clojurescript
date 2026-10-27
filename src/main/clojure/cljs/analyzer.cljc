@@ -5223,9 +5223,10 @@ x                          (not (contains? ret :info)))
 (defn register-specs
   "Registers speced vars found in a namespace analysis cache."
   [cached-ns]
+  ;; require-macros-ns skips the lock once cljs.spec.alpha is loaded: a
+  ;; parallel build reads thousands of caches while macro namespaces load
   #?(:clj (try
-            (locking load-mutex
-              (clojure.core/require 'cljs.spec.alpha))
+            (require-macros-ns 'cljs.spec.alpha nil)
             (catch Throwable t)))
   (let [{:keys [registry-ref speced-vars]} (get-spec-vars)]
     (when-let [registry (seq (:cljs.spec/registry-ref cached-ns))]
