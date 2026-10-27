@@ -12,7 +12,7 @@ A [Hono](https://hono.dev) backend in ClojureScript, compiled by
 - `npm start` runs it (on port 3000)
 
 The app is `src/{{nsDir}}/core.cljs`. It's compiled as a `:js-entries` module
-exporting the app (see `vite.config.mjs`), which
+exporting the app (see `vite.config.ts`), which
 [`@hono/vite-dev-server`](https://github.com/honojs/vite-plugins) serves and
 `@hono/vite-build` bundles. Changed namespaces are hot reloaded in place:
 `defonce` keeps its value.

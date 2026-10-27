@@ -63,7 +63,7 @@ export interface CompilerOptions {
   /** The dev server's nREPL server: `{ nreplPort: 0 }` picks a free port, written to the port files. */
   repl?: false | { nreplPort?: number; nreplHost?: string; portFiles?: string[] };
   /** A generated test runner requiring the test namespaces. */
-  testRunner?: { ns: CljSymbol; nsRegexp?: string; runner?: CljSymbol };
+  testRunner?: { ns: CljSymbol; nsRegexp?: string; runner: CljSymbol };
   [option: string]: EdnValue | undefined;
 }
 
