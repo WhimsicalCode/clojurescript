@@ -241,6 +241,11 @@
            (str "goog.loadModule(function(exports) {'use strict';\n" src "\n;return exports;});\n")
            src))))
 
+(def ^:private installed-goog-libs
+  "The Closure Library namespaces install-goog-libs wrote last, by output
+  directory."
+  (atom {}))
+
 (defn install-goog-libs
   "Writes the Closure Library namespaces used without an ES module shim
   (recorded by the compiler as :cljf.esm/goog-libs of the namespaces using
@@ -249,8 +254,14 @@
   [compiler-env {:keys [output-dir]}]
   (let [idx  (:js-dependency-index @compiler-env)
         lib  #(deps/closure-lib idx %)
-        nses (into (sorted-set) (mapcat ::goog-libs) (vals (::ana/namespaces @compiler-env)))]
-    (when (seq nses)
+        nses (into (sorted-set) (mapcat ::goog-libs) (vals (::ana/namespaces @compiler-env)))
+        out  (.getCanonicalPath (io/file output-dir))]
+    ;; the modules depend on the namespaces only (and the classpath, which a
+    ;; process doesn't change): the watcher's recompiles skip writing them
+    ;; again while they're the ones written last, and base.js is in place
+    (when (and (seq nses)
+               (not (and (= nses (get @installed-goog-libs out))
+                         (.exists (io/file output-dir goog-base)))))
       (let [files (loop [queue (vec (keep lib nses)) seen {}]
                     (if-let [{:keys [file requires] :as info} (first queue)]
                       (if (or (contains? seen file) (= "goog/base.js" file))
@@ -268,7 +279,8 @@
                 (str "import { goog } from \"" (relative-import out goog-base) "\";\n"
                      (when-not (= "goog/base.js" file)
                        (str "import \"" (relative-import out (str "goog-lib/" file)) "\";\n"))
-                     "export default goog.module.get(\"" ns "\");\n")))))))))
+                     "export default goog.module.get(\"" ns "\");\n")))))
+        (swap! installed-goog-libs assoc out nses)))))
 
 (defn- write-package-json
   "Marks the output directory as ES modules for Node.js."
