@@ -13,7 +13,10 @@
   },
   "exports": {
     ".": "./cljf/launcher.js",
-    "./vite": "./vite-plugin-cljs/index.js",
+    "./vite": {
+      "types": "./vite-plugin-cljs/index.d.ts",
+      "default": "./vite-plugin-cljs/index.js"
+    },
     "./karma": "./karma-esm/adapter.js",
     "./package.json": "./package.json"
   },

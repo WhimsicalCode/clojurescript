@@ -26,13 +26,14 @@ Dependencies and source paths come from the project's `deps.edn`:
  :deps {reagent/reagent {:mvn/version "2.0.1"}}}
 ```
 
-```js
-// vite.config.mjs
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite';
 import cljf from 'clojurific/vite';
 
-export default {
+export default defineConfig({
   plugins: [cljf({ outputDir: 'target/cljs' })],
-};
+});
 ```
 
 ```html

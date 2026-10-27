@@ -53,6 +53,25 @@ printf '(ns smoke.core)\n(println "smoke" (+ 1 2))\n' > "$project/src/smoke/core
     import { pathToFileURL } from 'node:url';
     for (const script of process.argv.slice(1)) await import(pathToFileURL(script).href);" $scripts)
   test "$output" = "$(printf 'smoke 3\nextra')"
+
+  # the plugin's types (vite-plugin-cljs/index.d.ts): a TypeScript config
+  # type checks, and wrong options don't. skipLibCheck: Vite's own types need
+  # @types/node, which the project doesn't install
+  npm install --silent --no-audit --no-fund typescript@5.9.3
+  printf '%s\n' '{"compilerOptions": {"strict": true, "module": "nodenext", "moduleResolution": "nodenext",' \
+    '  "target": "es2022", "noEmit": true, "skipLibCheck": true, "types": []},' \
+    '  "files": ["vite.config.ts"]}' > tsconfig.json
+  printf '%s\n' "import { defineConfig } from 'vite';" \
+    "import cljf from 'clojurific/vite';" \
+    "export default defineConfig(({ command }) => ({" \
+    "  plugins: [cljf({ outputDir: 'target/cljs', compilerOptions: {" \
+    "    buildHooks: [[\"'my.build/hook\", { outputTo: 'out.css' }]]," \
+    "    closureDefines: { 'goog.DEBUG': true }," \
+    "    ...(command === 'serve' && { repl: { nreplPort: 0 } }) } })]," \
+    "}));" > vite.config.ts
+  npx tsc -p .
+  printf '%s\n' "import cljf from 'clojurific/vite';" "cljf({ outputDir: 'out', prune: 'yes' });" > vite.config.ts
+  ! npx tsc -p . > /dev/null
 )
 
 # the templates' projects get this version's jar from the local Maven

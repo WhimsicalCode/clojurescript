@@ -155,14 +155,17 @@ The plugin needs Vite 8, which the templates use and the plugin is tested with. 
 
 The plugin (`clojurific/vite`) runs the compiler: a one-shot build for `vite build` (the main namespaces are the bundle's entry points) and watch mode for `vite`. Compile errors go to Vite's error overlay. In watch mode Vite's file watcher reports changed sources to the compiler, and hot updates wait for the compile and its build hooks to finish. Like shadow-cljs, compiler warnings are shown in the overlay too, and hot reloading pauses while any namespace has warnings: the output held back is reloaded once they're fixed. Pages loaded meanwhile show the overlay of the current error or warnings.
 
-```js
-// vite.config.mjs
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite';
 import cljf from 'clojurific/vite';
 
-export default {
+export default defineConfig({
   plugins: [cljf({ aliases: ['cljs'], config: 'cljs.edn', outputDir: 'out' })],
-};
+});
 ```
+
+The plugin has TypeScript types (`vite-plugin-cljs/index.d.ts`): a `vite.config.ts` type checks its options, including the common compiler options of `compilerOptions`, and editors complete them in a `vite.config.mjs` too.
 
 | option | |
 |---|---|
@@ -200,15 +203,16 @@ For server rendered pages the plugin writes `manifest.json` to Vite's `outDir`, 
 
 A Node.js backend is a `:js-entries` module exporting the server, which the dev server runs and `vite build` bundles. `npm create clojurific@latest my-app -- --template hono` scaffolds one with [Hono](https://hono.dev/):
 
-```js
-// vite.config.mjs
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite';
 import cljf from 'clojurific/vite';
 import devServer from '@hono/vite-dev-server';
 import build from '@hono/vite-build/node';
 
 const entry = 'target/cljs/cljs-esm-entries/server.js';
 
-export default {
+export default defineConfig({
   plugins: [
     cljf({
       outputDir: 'target/cljs',
@@ -225,7 +229,7 @@ export default {
     }),
     build({ entry, emptyOutDir: true, minify: false }),
   ],
-};
+});
 ```
 
 - `vite` runs the entry in the dev server's ssr environment as soon as it's compiled (`ssrEntries`), so the [REPL](#repl) evaluates in the server before its first request. `@hono/vite-dev-server` serves the app from the same module runner (`loadModule`), which hot reloads changed namespaces in place: `defonce` keeps its value. Its default, `ssrLoadModule`, would re-run a changed module and its importers instead.
@@ -286,14 +290,15 @@ Vite replaces shadow-cljs' build and dev server: `npm install -D clojurific vite
 - `:modules`' `:init-fn` becomes a script in `index.html` (`<script type="module" src="/src/my/app.cljs"></script>`), whose namespace calls its init fn at the top level. `:output-dir` is the plugin's `outputDir`, and `:dev-http` is Vite's dev server.
 - Add `:npm-interop :shadow` to keep shadow-cljs' bindings of CommonJS packages (`["pkg" :as x]` is `module.exports`).
 
-```js
-// vite.config.mjs
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite';
 import cljf from 'clojurific/vite';
 
-export default {
+export default defineConfig({
   plugins: [cljf({ config: 'cljs.edn', outputDir: 'target/cljs',
                    compilerOptions: { npmInterop: ':shadow' } })],
-};
+});
 ```
 
 In the code, `^:dev/before-load` / `^:dev/after-load`, `shadow.resource` and symbol requires of npm packages work as they are. `shadow.cljs.modern`'s `defclass` is `cljf.x`'s ([Classes](#classes)), `shadow.lazy` is `cljf.esm.lazy`, and lazily loaded namespaces are `:main` entries split by the bundler instead of `:modules` ([Lazy loading](#lazy-loading)). `:test` builds become a `:test-runner` ([Tests](#tests)). See also the [known gaps](#known-gaps).

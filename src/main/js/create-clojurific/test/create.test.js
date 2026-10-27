@@ -62,7 +62,7 @@ for (const template of TEMPLATES) {
     assert.equal(pkg.type, 'module');
     assert.equal(pkg.devDependencies.clojurific, `^${version}`);
     assert.match(readFileSync(path.join(root, 'deps.edn'), 'utf8'), /nrepl\/nrepl/);
-    const viteConfig = readFileSync(path.join(root, 'vite.config.mjs'), 'utf8');
+    const viteConfig = readFileSync(path.join(root, 'vite.config.ts'), 'utf8');
     assert.match(viteConfig, /repl: \{ nreplPort: 0 \}/);
     assert.ok(existsSync(path.join(root, '.gitignore')));
     assert.ok(!existsSync(path.join(root, '_gitignore')));

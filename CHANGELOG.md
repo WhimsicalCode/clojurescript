@@ -5,6 +5,10 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ## 0.12.11 [Next]
 
+### Added
+
+- The Vite plugin has TypeScript types (`clojurific/vite`'s `index.d.ts`): a `vite.config.ts` type checks the plugin's options and the common compiler options of `compilerOptions` (camelCase), and editors complete them in JavaScript configs too. `create-clojurific`'s templates have a `vite.config.ts`.
+
 ## 0.12.10 [2026-10-26]
 
 ### Changed

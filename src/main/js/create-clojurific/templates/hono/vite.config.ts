@@ -1,3 +1,4 @@
+import { defineConfig } from 'vite';
 import cljf from 'clojurific/vite';
 import devServer from '@hono/vite-dev-server';
 import build from '@hono/vite-build/node';
@@ -5,7 +6,7 @@ import build from '@hono/vite-build/node';
 // the backend: a module exporting the Hono app (:js-entries below)
 const entry = 'target/cljs/cljs-esm-entries/server.js';
 
-export default {
+export default defineConfig({
   plugins: [
     cljf({
       outputDir: 'target/cljs',
@@ -30,4 +31,4 @@ export default {
     // the cljf plugin minifies, after pruning unused protocol implementations
     build({ entry, emptyOutDir: true, minify: false }),
   ],
-};
+});

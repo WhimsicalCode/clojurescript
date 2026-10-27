@@ -1,6 +1,7 @@
+import { defineConfig } from 'vite';
 import cljf from 'clojurific/vite';
 
-export default {
+export default defineConfig({
   plugins: [
     cljf({
       outputDir: 'target/cljs',
@@ -8,4 +9,4 @@ export default {
       compilerOptions: { repl: { nreplPort: 0 } },
     }),
   ],
-};
+});
