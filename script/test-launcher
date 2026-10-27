@@ -6,7 +6,8 @@
 # empty project, builds a namespace with npx cljf, and bundles a page loading
 # its source, and a JavaScript module importing another, with Vite and the
 # plugin. Then scaffolds a project of each create-clojurific template and
-# bundles it. The package gets the compiler from Clojars: the project's local
+# bundles it, and runs the hono project's dev server (vite-plugin-cljs/test/
+# dev-server.mjs). The package gets the compiler from Clojars: the project's local
 # Maven repository has the jar of this version (script/clojars install), and
 # downloads the rest (about 20 MB, and the templates' libraries).
 # CLJF_TEST_DOWNLOADS=1 also tests a start with an empty local Maven
@@ -64,7 +65,7 @@ printf '(ns smoke.core)\n(println "smoke" (+ 1 2))\n' > "$project/src/smoke/core
   printf '%s\n' "import { defineConfig } from 'vite';" \
     "import cljf from 'clojurific/vite';" \
     "export default defineConfig(({ command }) => ({" \
-    "  plugins: [cljf({ outputDir: 'target/cljs', compilerOptions: {" \
+    "  plugins: [cljf({ outputDir: 'target/cljs', ignoreWarnings: command === 'serve', compilerOptions: {" \
     "    buildHooks: [[\"'my.build/hook\", { outputTo: 'out.css' }]]," \
     "    closureDefines: { 'goog.DEBUG': true }," \
     "    ...(command === 'serve' && { repl: { nreplPort: 0 } }) } })]," \
@@ -96,6 +97,9 @@ for template in vanilla reagent uix hono; do
     if [ "$template" = hono ]; then
       # a Node.js server, its app bundled in
       grep -q 'Hello Hono!' dist/index.js
+      # the dev server runs it despite a compiler warning, and releases the
+      # output held back in its environment once it's fixed
+      CLJ_CONFIG="$project/clj-config" node "$repo/src/main/js/vite-plugin-cljs/test/dev-server.mjs"
     else
       grep -q "create-$template.core" dist/manifest.json
     fi

@@ -92,6 +92,8 @@ export interface CljfOptions {
   ssrEntries?: string[];
   /** Accept cljs_eval from pages on other hosts too, defaults to false. */
   replRemoteConsole?: boolean;
+  /** Hot reload despite compiler warnings, like shadow-cljs' `:devtools {:ignore-warnings true}`: they go to the terminal only, defaults to false (hot reload pauses while any namespace has warnings, and the overlay shows them). */
+  ignoreWarnings?: boolean;
 }
 
 /** The Vite plugin compiling ClojureScript to ES modules. */

@@ -156,7 +156,7 @@ Macros reading classpath resources call `cljf.esm/watch-resource!`, and the watc
 
 The plugin needs Vite 8, which the templates use and the plugin is tested with. Its production bundle pass (`prune`) uses the oxc parser and minifier that ship with Vite 8's Rolldown; with `prune: false`, earlier versions can build too, but they aren't tested.
 
-The plugin (`clojurific/vite`) runs the compiler: a one-shot build for `vite build` (the main namespaces are the bundle's entry points) and watch mode for `vite`. Compile errors go to Vite's error overlay. In watch mode Vite's file watcher reports changed sources to the compiler, and hot updates wait for the compile and its build hooks to finish. Like shadow-cljs, compiler warnings are shown in the overlay too, and hot reloading pauses while any namespace has warnings: the output held back is reloaded once they're fixed. Pages loaded meanwhile show the overlay of the current error or warnings.
+The plugin (`clojurific/vite`) runs the compiler: a one-shot build for `vite build` (the main namespaces are the bundle's entry points) and watch mode for `vite`. Compile errors go to Vite's error overlay. In watch mode Vite's file watcher reports changed sources to the compiler, and hot updates wait for the compile and its build hooks to finish. Like shadow-cljs, compiler warnings are shown in the overlay too, and hot reloading pauses while any namespace has warnings: the output held back is reloaded once they're fixed. Pages loaded meanwhile show the overlay of the current error or warnings. The `ignoreWarnings` option switches the pause off, like shadow-cljs' `:devtools {:ignore-warnings true}`: the warnings then go to the terminal only. The `ssrEntries` run once they're compiled either way, a warning is no error: the HTML pages a server entry serves (those loading `@vite/client`) show the overlay, its other responses (i.e. JSON) only the terminal's line.
 
 ```ts
 // vite.config.ts
@@ -184,6 +184,7 @@ The plugin has TypeScript types (`vite-plugin-cljs/index.d.ts`): a `vite.config.
 | `manifest` | the file in Vite's `outDir` the entry points' scripts and preloads are written to, for server rendered pages, defaults to `'manifest.json'`; `false` doesn't write it |
 | `prune` | removes unused protocol implementations and shortens ClojureScript property names in production bundles, defaults to `true` |
 | `replRemoteConsole` | accepts `cljs_eval` from pages on other machines too, defaults to `false` |
+| `ignoreWarnings` | hot reloads despite compiler warnings, which then go to the terminal only (the compiled line counts all namespaces' outstanding warnings), defaults to `false` |
 
 The plugin starts the compiler with the launcher, on the classpath of the project's `deps.edn` with `aliases`. `command` starts it with another command instead, e.g. the Clojure CLI's `['clojure', '-M:cljs']`; cljf.esm's arguments follow it.
 

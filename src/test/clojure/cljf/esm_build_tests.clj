@@ -308,3 +308,25 @@
       (is (= "false" (debug? {:mode :release}))))
     (testing ":closure-defines sets it in a :release build too"
       (is (= "true" (debug? {:mode :release :closure-defines '{goog.DEBUG true}}))))))
+
+(deftest compiled-events-report-the-build-s-outstanding-warnings
+  (let [outstanding #'esm/outstanding-warnings
+        w           (fn [output message] {:output output :message message})
+        a1          (w "out/a.js" "a1")
+        b1          (w "out/b.js" "b1")]
+    (testing "a compile's warnings replace those of the files it compiled"
+      (is (= [{"out/a.js" [a1]} [a1]]
+             (outstanding {} {:files ["out/a.js"] :warnings [a1]} #{"out/a.js" "out/b.js"})))
+      (is (= [{"out/a.js" [a1] "out/b.js" [b1]} [a1 b1]]
+             (outstanding {"out/a.js" [a1]} {:files ["out/b.js"] :warnings [b1]} #{"out/a.js" "out/b.js"})))
+      (is (= [{} []]
+             (outstanding {"out/a.js" [a1]} {:files ["out/a.js"] :warnings []} #{"out/a.js"}))))
+    (testing "a namespace removed from the build has no warnings, though it isn't compiled again"
+      (is (= [{} []]
+             (outstanding {"out/a.js" [a1]} {:files ["out/main.js"] :warnings []} #{"out/main.js"}))))
+    (testing "the warnings of no namespace in the build (i.e. raised in cljs.user) are reported once"
+      (let [user (w "out/cljs/user.js" "user")]
+        (is (= [{"out/a.js" [a1]} [a1 user]]
+               (outstanding {} {:files ["out/a.js"] :warnings [a1 user]} #{"out/a.js"})))
+        (is (= [{"out/a.js" [a1]} [a1]]
+               (outstanding {"out/a.js" [a1]} {:files [] :warnings []} #{"out/a.js"})))))))
