@@ -32,6 +32,22 @@ fs.writeFileSync(coreFile, `(ns ${ns}
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// The dev servers' process groups: npx, Vite and the compiler it starts.
+// Killing npx alone leaves Vite running on Linux, holding the pipes open.
+const groups = new Set();
+const killGroup = pid => {
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {}
+  groups.delete(pid);
+};
+process.on('exit', () => groups.forEach(killGroup));
+// a hang fails the test instead of the CI job's timeout
+setTimeout(() => {
+  console.error('dev server: timed out after 5 minutes');
+  process.exit(1);
+}, 5 * 60 * 1000).unref();
+
 async function until(what, f, timeout = 60000) {
   const end = Date.now() + timeout;
   for (;;) {
@@ -45,10 +61,14 @@ async function until(what, f, timeout = 60000) {
 // One dev server, its output in log. Returns the result of test, or throws.
 async function withDevServer(test) {
   let log = '';
-  const proc = spawn('npx', ['vite', '--port', '0', '--clearScreen', 'false'], {
+  // 127.0.0.1: on Linux, localhost can resolve to ::1 for Vite and to
+  // 127.0.0.1 for fetch
+  const proc = spawn('npx', ['vite', '--host', '127.0.0.1', '--port', '0', '--clearScreen', 'false'], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, NO_COLOR: '1' },
+    detached: true,
   });
+  groups.add(proc.pid);
   proc.stdout.on('data', chunk => (log += chunk));
   proc.stderr.on('data', chunk => (log += chunk));
   const exited = new Promise(resolve => proc.on('exit', resolve));
@@ -64,8 +84,8 @@ async function withDevServer(test) {
     e.message += `\n--- vite's output:\n${log}`;
     throw e;
   } finally {
-    proc.kill();
-    await exited;
+    killGroup(proc.pid);
+    await Promise.race([exited, sleep(5000)]);
   }
 }
 
@@ -105,3 +125,5 @@ for (;;) {
   }
 }
 console.log('dev server: ok');
+// fetch's keep-alive sockets don't hold the test
+process.exit(0);
