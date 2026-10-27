@@ -701,14 +701,17 @@
 
 (defn- macro-cache-key
   "Identifies the Clojure code macro namespaces load: the classpath, the
-  Clojure and Java versions, and the path, modification time and size of
-  the jars and of every Clojure source in the classpath directories (except
-  the output directory, which has copies of jars' sources)."
-  [output-dir]
+  Clojure and Java versions, whether asserts are compiled (:elide-asserts
+  binds *assert*, which Clojure compiles the macro namespaces with), and
+  the path, modification time and size of the jars and of every Clojure
+  source in the classpath directories (except the output directory, which
+  has copies of jars' sources)."
+  [output-dir asserts?]
   (let [output (.getCanonicalPath (io/file output-dir))
         md     (java.security.MessageDigest/getInstance "SHA-1")
         add!   (fn [& xs] (.update md (.getBytes (str (string/join "\t" xs) "\n") "UTF-8")))]
-    (add! (clojure-version) (System/getProperty "java.version") (util/clojurescript-version))
+    (add! (clojure-version) (System/getProperty "java.version") (util/clojurescript-version)
+      (str "assert " (boolean asserts?)))
     (doseq [entry (classpath-entries)
             :let [f (io/file entry)]]
       (add! entry (.lastModified f) (.length f))
@@ -729,11 +732,11 @@
   any change of them compiles them again. Classes being compiled go to a
   directory of the build's own, renamed to the key's once the build
   succeeds."
-  [{:keys [aot-macros output-dir]} f]
+  [{:keys [aot-macros output-dir elide-asserts]} f]
   (if-not aot-macros
     (f)
     (let [root   ((requiring-resolve 'cljf.main/cache-dir) "macro-classes")
-          key    (macro-cache-key output-dir)
+          key    (macro-cache-key output-dir (not= true elide-asserts))
           dir    (io/file root key)
           done   (io/file dir ".complete")
           ready? (.exists done)
