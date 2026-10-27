@@ -427,7 +427,8 @@
   "When the output directory lacks cljs.core's output (a cold build), copies
   it from the per-user cache, compiled by an earlier build with the same
   compiler, cljs.core and options: the build then reads it as its own up to
-  date output (the analysis cache round trips exactly)."
+  date output (the analysis cache round trips exactly). Returns whether it
+  did."
   [{:keys [source-file]} opts]
   (let [dir  (core-cache-dir source-file opts)
         dest (output-file 'cljs.core opts)]
@@ -445,7 +446,8 @@
             (io/copy from to))
           ;; as compile-file leaves them
           (when (#{".js" ".cljs.cache.json"} ext)
-            (.setLastModified to mtime)))))))
+            (.setLastModified to mtime)))
+        true))))
 
 (defn- store-core!
   "Copies cljs.core's output this build compiled to the per-user cache,
@@ -960,11 +962,26 @@
          (let [start  (System/nanoTime)
                [preload-add! preload] (when (:parallel-build opts)
                                         (preload-macro-namespaces (previous-macro-order opts)))
+               ;; With cljs.core's output from the per-user cache, reading its
+               ;; analysis doesn't depend on the build's other namespaces:
+               ;; under :parallel-build it's read while they're found. A
+               ;; compile of it stays after (see #60: compiling it alongside
+               ;; slows both)
+               core-input (when (and (:parallel-build opts) (:core-cache opts true))
+                            (first (find-sources ['cljs.core] (dissoc opts :parallel-build))))
+               core-early (when (and core-input (instance? File (:source-file core-input))
+                                     (restore-core! core-input opts))
+                            (let [pool (Executors/newSingleThreadExecutor)]
+                              (try
+                                (.submit pool ^Callable (bound-fn [] (compile-ns core-input opts)))
+                                (finally
+                                  (.shutdown pool)))))
                inputs (try
                         (find-sources (mains opts) opts)
                         (catch Throwable e
                           ;; ends the preloader
                           (when preload-add! (preload-add! nil))
+                          (some-> ^Future core-early (.cancel true))
                           (throw e)))]
            ;; lets the compiler know which namespaces are part of the build
            ;; before they're analyzed
@@ -978,11 +995,16 @@
              (store-macro-order! opts order)
              ;; cljs.core is analyzed first, the compiler expects its analysis
              ;; to be available when compiling anything else
-             (let [core   (first (filter #(= 'cljs.core (:ns %)) inputs))
-                   cache? (and (:core-cache opts true) (instance? File (:source-file core)))]
-               (when cache? (restore-core! core opts))
-               (compile-ns core opts)
-               (when cache? (store-core! core opts)))
+             (if core-early
+               (try
+                 (.get ^Future core-early)
+                 (catch java.util.concurrent.ExecutionException e
+                   (throw (or (.getCause e) e))))
+               (let [core   (first (filter #(= 'cljs.core (:ns %)) inputs))
+                     cache? (and (:core-cache opts true) (instance? File (:source-file core)))]
+                 (when cache? (restore-core! core opts))
+                 (compile-ns core opts)
+                 (when cache? (store-core! core opts))))
              (let [others (remove #(= 'cljs.core (:ns %)) inputs)]
                (if (:parallel-build opts)
                  (compile-parallel others opts)
