@@ -685,6 +685,14 @@
        (.submit pool
          ^Callable
          (bound-fn []
+           ;; first what reading or compiling cljs.core needs, which the
+           ;; build waits for: its macros, and cljs.spec.alpha's for its
+           ;; specs (register-specs). The analyzer's lock isn't fair, so
+           ;; cljs.core waiting for it would wait for many of the others
+           (try
+             (ana/load-core)
+             (ana/require-macros-ns 'cljs.spec.alpha nil)
+             (catch Throwable _))
            (loop []
              (let [ns (.take queue)]
                (when-not (identical? end ns)
