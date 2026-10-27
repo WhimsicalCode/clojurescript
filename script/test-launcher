@@ -64,7 +64,7 @@ printf '(ns smoke.core)\n(println "smoke" (+ 1 2))\n' > "$project/src/smoke/core
   printf '%s\n' "import { defineConfig } from 'vite';" \
     "import cljf from 'clojurific/vite';" \
     "export default defineConfig(({ command }) => ({" \
-    "  plugins: [cljf({ outputDir: 'target/cljs', compilerOptions: {" \
+    "  plugins: [cljf({ outputDir: 'target/cljs', ignoreWarnings: command === 'serve', compilerOptions: {" \
     "    buildHooks: [[\"'my.build/hook\", { outputTo: 'out.css' }]]," \
     "    closureDefines: { 'goog.DEBUG': true }," \
     "    ...(command === 'serve' && { repl: { nreplPort: 0 } }) } })]," \

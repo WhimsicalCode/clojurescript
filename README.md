@@ -184,7 +184,7 @@ The plugin has TypeScript types (`vite-plugin-cljs/index.d.ts`): a `vite.config.
 | `manifest` | the file in Vite's `outDir` the entry points' scripts and preloads are written to, for server rendered pages, defaults to `'manifest.json'`; `false` doesn't write it |
 | `prune` | removes unused protocol implementations and shortens ClojureScript property names in production bundles, defaults to `true` |
 | `replRemoteConsole` | accepts `cljs_eval` from pages on other machines too, defaults to `false` |
-| `ignoreWarnings` | hot reloads despite compiler warnings, which then go to the terminal only, defaults to `false` |
+| `ignoreWarnings` | hot reloads despite compiler warnings, which then go to the terminal only (the compiled line counts all namespaces' outstanding warnings), defaults to `false` |
 
 The plugin starts the compiler with the launcher, on the classpath of the project's `deps.edn` with `aliases`. `command` starts it with another command instead, e.g. the Clojure CLI's `['clojure', '-M:cljs']`; cljf.esm's arguments follow it.
 

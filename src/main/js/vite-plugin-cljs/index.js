@@ -16,6 +16,7 @@ import { Worker } from 'node:worker_threads';
 import { compilerCommand } from '../cljf/launcher.js';
 import { pruneChunks, propertyRenames } from './prune.js';
 import { ednValue } from './edn.js';
+import { watchWarnings } from './warnings.js';
 
 const EVENT_PREFIX = '[cljf.esm] ';
 const NPM_AS = 'cljs-npm-as:';
@@ -419,12 +420,8 @@ export default function cljf(options) {
   let pageNamespaces = [];
   let compiling = Promise.resolve();
   const localModules = new Set();
-  // Like shadow-cljs, the output isn't hot reloaded while namespaces have
-  // warnings, it would fail at runtime (undeclared vars): the warnings by
-  // output file, and the output held back until they're fixed (not with
-  // options.ignoreWarnings: the warnings are only counted then).
-  const warnings = new Map();
-  const held = new Set();
+  // the compiler warnings, which hold hot updates back (see warnings.js)
+  const warnings = watchWarnings({ ignoreWarnings: options.ignoreWarnings });
 
   function compilerArgs(command, extra) {
     const profile = options.profile ?? (command === 'watch' ? 'dev' : 'release');
@@ -847,7 +844,7 @@ export default function cljf(options) {
     // hooks, i.e. generated CSS) to finish.
     async handleHotUpdate({ file }) {
       await compiling;
-      if (held.has(file)) return [];
+      if (warnings.held(file)) return [];
     },
 
     configureServer(devServer) {
@@ -979,17 +976,9 @@ export default function cljf(options) {
           return;
         }
         // before the hot updates waiting for the compile
-        let released = [];
-        if (event.type === 'compiled') {
-          for (const file of event.files ?? []) warnings.delete(file);
-          for (const w of event.warnings ?? []) warnings.set(w.output, [...(warnings.get(w.output) ?? []), w]);
-          if (warnings.size && !options.ignoreWarnings) {
-            for (const file of event.files ?? []) held.add(file);
-          } else {
-            released = [...held].filter(file => !event.files?.includes(file));
-            held.clear();
-          }
-        }
+        const { released, outstanding, ignored } = event.type === 'compiled'
+          ? warnings.compiled(event)
+          : { released: [], outstanding: [], ignored: 0 };
         compiled();
         // The dev manifest, the pages' scripts, is written after the first
         // compile even if it failed: pages then show the error overlay.
@@ -998,7 +987,6 @@ export default function cljf(options) {
           await writeManifest(Object.fromEntries(Object.entries(info.main).map(([ns, file]) =>
             [ns, { scripts: [`${config.base}@vite/client`, devUrl(file)], preload: [] }])));
         }
-        const outstanding = options.ignoreWarnings ? [] : [...warnings.values()].flat();
         if (event.type === 'compiled' && outstanding.length) {
           const [first] = outstanding;
           config.logger.warn(`[cljf] compiled ${event.namespaces} namespace(s) in ${event.ms}ms, ` +
@@ -1016,9 +1004,9 @@ export default function cljf(options) {
           runSsrEntries();
           ready();
         } else if (event.type === 'compiled') {
-          const ignored = [...warnings.values()].flat().length;
+          // all namespaces' warnings, not only this compile's
           config.logger.info(`[cljf] compiled ${event.namespaces} namespace(s) in ${event.ms}ms` +
-            (ignored ? `, ${ignored} warning(s) ignored` : ''), { timestamp: true });
+            (ignored ? `, ${ignored} outstanding warning(s) ignored` : ''), { timestamp: true });
           problem = null;
           // the namespaces held back that this compile didn't update
           const client = server.environments.client;
