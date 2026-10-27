@@ -5,9 +5,25 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ## 0.12.12 [Next]
 
+### Added
+
+- Builds keep `cljs.core`'s output in the per-user cache (`cljs-core/`, keyed by the compiler, `cljs.core`'s source and the options its output depends on) and copy it into output directories that lack it: a cold build reads `cljs.core`'s analysis instead of compiling it, about 1s faster on the Whimsical app. `:core-cache false` disables it.
+- `cljf.main`, `cljf.esm`'s command line loading the compiler from classes compiled on its first run (kept in the per-user cache until the classpath or the compiler's sources change): the launcher and the Vite plugin start the compiler about 0.6s faster.
+- `:aot-macros true` loads macro namespaces from classes compiled by an earlier build (in the per-user cache, shared by output directories, recompiled when a Clojure source or jar on the classpath changes): a watch restarting with nothing to recompile starts about 35% faster on the Whimsical app.
+
+### Changed
+
+- The per-user caches of compiler classes, macro classes and `cljs.core`'s output key the Clojure sources by content instead of modification time, and their classes count as current for sources not changed since: a cache restored onto a fresh checkout (i.e. by CI) or sources checked out again are reused instead of compiled again. Jars are still keyed by modification time and size.
+- Less redundant work and lock contention in parallel builds: the set of analyzed namespaces' first segments (which munging locals checks) is kept up to date incrementally, by one thread at a time, instead of every munging thread recomputing it whenever a namespace is added (33 million calls per Whimsical app build down to 3 thousand); reading a cached namespace no longer takes the analyzer's load lock to require `cljs.spec.alpha` once it's loaded; and `requires-compilation?` looks up `cljs/core.aot.js` on the classpath only for `cljs.core`.
+- Production builds: the Vite plugin composes the source maps of Vite's preload rewrites of dynamic imports (`__VITE_PRELOAD__`) in its minify workers, with the rest of each chunk's map, instead of Vite composing them one chunk after another. The minify workers also prepare each chunk's map while the minifier runs, and compute the preload edits' maps directly rather than with MagicString and remapping. Same bundle and source maps byte for byte; bundling the Whimsical app takes about 3s less. A rewrite the plugin doesn't recognize exactly is left to Vite as before.
+- Analysis caches are serialized in memory and written to their file in one go, rather than transit writing to the file as it serializes: parallel builds spent most of their system time in these writes. The Whimsical app's release compile takes about a third less time.
+- The Vite plugin minifies chunks and composes their source maps in worker threads, and uses a native summarizer for pruning when `script/build-native-prune` built one (Rust, oxc): bundling the Whimsical app takes about 15% less time, with the same output.
+- `:parallel-build` compiles a namespace as soon as its dependencies are compiled, on threads that never wait for each other, parses the namespaces' `ns` forms in parallel and loads macro namespaces while `cljs.core` compiles. Macro namespaces loaded already, and classpath lookups of namespaces' sources, no longer go through the analyzer's global lock or the class loader on every use: the Whimsical app's release build compiles about 35% faster.
+
 ### Fixed
 
 - The Vite plugin's `compilerOptions` object writes `null` as `nil` and leaves out keys whose value is `undefined`, instead of writing them as the (truthy) symbols `null` and `undefined`: `repl: dev ? { nreplPort: 0 } : undefined` no longer sets `:repl`, and a `null` define no longer counts as set.
+- Namespaces compiled against an analysis read from the analysis cache emit the same code as against a fresh one: the cache keeps the metadata of vars' arglists (i.e. `{:pre ...}`, which sci's `copy-var` copies) and the reader's Integer source positions, which it turned into Longs (emitted in parens).
 
 ## 0.12.11 [2026-10-27]
 
