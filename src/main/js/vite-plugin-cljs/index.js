@@ -10,7 +10,7 @@ import fs from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import os from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { compilerCommand } from '../cljf/launcher.js';
@@ -154,7 +154,7 @@ function loadNativePrune() {
   const file = new URL(`./native/cljf-prune.${process.platform}-${process.arch}.node`, import.meta.url);
   if (process.env.CLJF_NATIVE_PRUNE === 'false' || !existsSync(file)) return null;
   try {
-    return createRequire(import.meta.url)(file.pathname);
+    return createRequire(import.meta.url)(fileURLToPath(file));
   } catch (e) {
     return null;
   }
