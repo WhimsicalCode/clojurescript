@@ -2869,7 +2869,12 @@
           (:options @env/*compiler*))))
      ([^File src ^File dest opts]
       (ensure
-        (with-core-cljs opts
+        ;; Under ES module output, compiling cljs.core analyzes it first
+        ;; without writing its analysis cache, which the compile writes
+        ;; right after
+        (with-core-cljs (cond-> opts
+                          (and (esm-mode? opts) (= 'cljs.core (:ns (ana/parse-ns src))))
+                          (assoc :cache-analysis false))
           (fn []
             (when (and (or ana/*verbose* (:verbose opts))
                        (not (:compiler-stats opts)))
