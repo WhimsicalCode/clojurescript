@@ -1104,6 +1104,35 @@
       (and (:esm-hmr opts) (not (false? (:esm-repl opts))))
       (assoc :esm-repl true ::repl-mains (atom #{})))))
 
+(defn- reuse-inputs
+  "The build's inputs after files changed, if finding them again would find
+  the same namespaces in the same order: the mains are the same, and every
+  changed file is a Clojure (macro) file, or the source of an input whose
+  ns form still names it and requires the same namespaces. The changed
+  sources' ns infos are parsed again. nil otherwise, i.e. when a file was
+  added, removed or renamed: find-sources finds the inputs then."
+  [inputs prev-mains mains changed]
+  (when (and (seq inputs) (= prev-mains (vec mains)))
+    (let [by-ns (into {} (map (juxt :ns identity)) inputs)
+          fresh (reduce
+                  (fn [m ^File f]
+                    (cond
+                      (not (.exists f)) (reduced nil)
+                      (re-find #"\.clj$" (.getName f)) m
+                      :else
+                      (let [ns-info (parse-ns f)
+                            old     (by-ns (:ns ns-info))]
+                        (if (and old
+                                 (= (.getCanonicalPath f)
+                                    (.getCanonicalPath ^File (:source-file old)))
+                                 (= (set (:requires ns-info)) (set (:requires old))))
+                          (assoc m (:ns ns-info) (assoc ns-info :source-file (:source-file old)))
+                          (reduced nil)))))
+                  {}
+                  changed)]
+      (when fresh
+        (mapv #(or (fresh (:ns %)) %) inputs)))))
+
 (defn watch
   "Builds like build, then recompiles namespaces as their sources change.
   With :watch-events :stdin, the parent process (the Vite plugin) watches
@@ -1126,6 +1155,8 @@
         built?       (atom false)
         ;; the build's inputs, for build hooks run by the REPL
         inputs-      (atom [])
+        ;; the mains the inputs were found for
+        inputs-mains- (atom nil)
         ;; the modification times of the source files compiled: a file the
         ;; REPL compiled (load-file) isn't compiled again when the editor's
         ;; save is reported
@@ -1148,6 +1179,7 @@
                          (env/with-compiler-env compiler-env
                            (ensure-analyzed! compiler-env inputs opts))
                          (reset! inputs- inputs)
+                         (reset! inputs-mains- (vec (mains opts)))
                          (reset! built? true)
                          (reset! warnings- {})
                          (doto {:type       "compiled"
@@ -1166,9 +1198,13 @@
                              gen    (if (:test-runner opts) (generate-test-runner opts) {})
                              runner-changed (when (and runner (not= before (slurp-if-exists runner)))
                                               [(-> opts :test-runner :ns)])
-                             inputs (binding [*generated-sources* gen]
-                                      (env/with-compiler-env compiler-env
-                                        (find-sources (mains opts) opts)))
+                             inputs (or (when-not (:test-runner opts)
+                                          (env/with-compiler-env compiler-env
+                                            (reuse-inputs @inputs- @inputs-mains- (mains opts) changed)))
+                                        (binding [*generated-sources* gen]
+                                          (env/with-compiler-env compiler-env
+                                            (find-sources (mains opts) opts))))
+                             _      (reset! inputs-mains- (vec (mains opts)))
                              _      (swap! compiler-env assoc ::namespaces (into #{} (map :ns) inputs))
                              _      (reset! inputs- inputs)
                              macros (keep #(when (re-find #"\.clj[c]?$" (.getName ^File %)) (file-ns %)) changed)
