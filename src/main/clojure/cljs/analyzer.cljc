@@ -644,25 +644,32 @@
    (def load-mutex (Object.)))
 
 #?(:clj
-   (defn- loaded-lib?
-     "Whether Clojure namespace lib finished loading: require adds it to
-     *loaded-libs* after loading it."
-     [lib]
-     (contains? @@#'clojure.core/*loaded-libs* lib)))
+   (def ^:private required-macro-nses
+     "The macro namespaces require-macros-ns required, once their load
+     completed. Not *loaded-libs*: the ns macro adds a namespace to it when
+     its load starts, before its macros are defined."
+     (java.util.concurrent.ConcurrentHashMap/newKeySet)))
 
 #?(:clj
-   (defn- require-macros-ns
+   (defn- macro-ns-required?
+     "Whether require-macros-ns required macro namespace lib completely."
+     [lib]
+     (.contains ^java.util.Set required-macro-nses lib)))
+
+#?(:clj
+   (defn require-macros-ns
      "Requires macro namespace nsym (with flag k, :reload or :reload-all, if
-     any) holding load-mutex. Namespaces loaded already aren't required
+     any) holding load-mutex. Namespaces required already aren't required
      again: every namespace compiled requires its macro namespaces, which
      would serialize parallel compiles on the lock."
      [nsym k]
      (if k
        (locking load-mutex
          (clojure.core/require nsym k))
-       (when-not (loaded-lib? nsym)
+       (when-not (macro-ns-required? nsym)
          (locking load-mutex
-           (clojure.core/require nsym))))))
+           (clojure.core/require nsym)
+           (.add ^java.util.Set required-macro-nses nsym))))))
 
 #?(:clj
    (defn- load-data-reader-file [mappings ^java.net.URL url]
@@ -5125,7 +5132,7 @@ x                          (not (contains? ret :info)))
    (defn- get-spec-vars
      []
      (when-let [spec-ns (find-ns 'cljs.spec.alpha)]
-       (if (loaded-lib? 'cljs.spec.alpha)
+       (if (macro-ns-required? 'cljs.spec.alpha)
          {:registry-ref (ns-resolve spec-ns 'registry-ref)
           :speced-vars  (ns-resolve spec-ns '_speced_vars)}
          (locking load-mutex

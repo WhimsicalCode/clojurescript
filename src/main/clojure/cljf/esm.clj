@@ -109,10 +109,44 @@
           preloads (main-namespaces opts) (js-entry-namespaces opts)
           (some-> repl-mains deref sort)))
 
+(defn- parse-sources-parallel!
+  "Parses the ns forms of namespaces and their transitive dependencies with
+  a pool of threads, filling parse-ns' cache for find-sources' walk, which
+  is sequential (its order is the build's)."
+  [namespaces output-dir]
+  (let [pool  (Executors/newFixedThreadPool (.availableProcessors (Runtime/getRuntime)))
+        seen  (java.util.concurrent.ConcurrentHashMap.)
+        tasks (java.util.concurrent.atomic.AtomicInteger. 0)
+        done  (java.util.concurrent.CountDownLatch. 1)
+        visit (fn visit [ns]
+                (when (nil? (.putIfAbsent seen ns true))
+                  (.incrementAndGet tasks)
+                  (.execute pool
+                    ^Runnable
+                    (bound-fn []
+                      (try
+                        (when-let [url (source-for-ns ns)]
+                          (let [ns-info (parse-ns (source-file url ns output-dir))]
+                            (doseq [r (cons 'cljs.core (map symbol (remove string? (:requires ns-info))))]
+                              (visit r))))
+                        ;; find-sources' walk reports it
+                        (catch Throwable _)
+                        (finally
+                          (when (zero? (.decrementAndGet tasks))
+                            (.countDown done))))))))]
+    (try
+      (run! visit (map symbol namespaces))
+      (when (pos? (.get tasks))
+        (.await done))
+      (finally
+        (.shutdown pool)))))
+
 (defn find-sources
   "Returns the parsed ns info of namespaces and their transitive ClojureScript
   dependencies in dependency order."
-  [namespaces {:keys [output-dir]}]
+  [namespaces {:keys [output-dir parallel-build]}]
+  (when parallel-build
+    (parse-sources-parallel! namespaces output-dir))
   (letfn [(visit [{:keys [seen order] :as state} ns]
             (if (contains? seen ns)
               state
@@ -475,11 +509,9 @@
       (.submit pool
         ^Callable
         (bound-fn []
-          (doseq [ns nses
-                  :when (not (contains? @@#'clojure.core/*loaded-libs* ns))]
+          (doseq [ns nses]
             (try
-              (locking ana/load-mutex
-                (require ns))
+              (ana/require-macros-ns ns nil)
               (catch Throwable _)))))
       (finally
         (.shutdown pool)))))
