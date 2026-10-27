@@ -756,13 +756,15 @@
                    (io/file root (str key ".tmp-" (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime))))
           thread (Thread/currentThread)
           loader (.getContextClassLoader thread)
-          dcl    (clojure.lang.DynamicClassLoader. (clojure.lang.RT/baseLoader))]
+          dcl    (or (when ready?
+                       ((requiring-resolve 'cljf.main/cache-loader) dir (clojure.lang.RT/baseLoader)))
+                     (doto (clojure.lang.DynamicClassLoader. (clojure.lang.RT/baseLoader))
+                       (.addURL (.toURL (.toURI (or tmp dir))))))]
       (if ready?
         ;; used while this process runs (a watch loads more of its classes
         ;; later), see cljf.main/prune!
         ((requiring-resolve 'cljf.main/hold!) dir)
         (.mkdirs tmp))
-      (.addURL dcl (.toURL (.toURI (or tmp dir))))
       ;; threads started by the build inherit it
       (.setContextClassLoader thread dcl)
       (try
@@ -777,6 +779,7 @@
                               *compile-path*  (.getPath tmp)]
                       (f)))]
           (when tmp
+            ((requiring-resolve 'cljf.main/write-shadowed!) tmp (clojure.lang.RT/baseLoader))
             (spit (io/file tmp ".complete") key)
             (try
               (java.nio.file.Files/move (.toPath tmp) (.toPath dir)

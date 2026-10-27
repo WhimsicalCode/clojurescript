@@ -89,6 +89,73 @@
         (alter-var-root (requiring-resolve 'cljs.js-deps/goog-dependencies)
           (constantly (fn [] deps)))))))
 
+(defn- class-file [^String name]
+  (str (.replace name \. \/) ".class"))
+
+(defn write-shadowed!
+  "Records in cache entry dir (being written) the names of its classes that
+  parent has too, which cache-loader loads parent first."
+  [^File dir ^ClassLoader parent]
+  (let [root (count (.getPath dir))
+        shadowed (->> (file-seq dir)
+                      (map #(.getPath ^File %))
+                      (filter #(.endsWith ^String % ".class"))
+                      (map #(-> ^String % (subs (inc root)) (subs 0 (- (count %) root 7)) (.replace File/separator ".")))
+                      (filter #(.getResource parent (class-file %)))
+                      (into (sorted-set)))]
+    (spit (io/file dir ".shadowed") (pr-str shadowed))))
+
+(def ^:private ^java.lang.reflect.Method in-memory-class
+  "DynamicClassLoader's (package private) lookup of the classes the Clojure
+  compiler defined in memory, which its loadClass consults first."
+  (doto (.getDeclaredMethod DynamicClassLoader "findInMemoryClass" (into-array Class [String]))
+    (.setAccessible true)))
+
+(defn cache-loader
+  "A class loader of the classes in cache entry dir, as a DynamicClassLoader
+  with dir on its classpath but loading the entry's classes, and finding its
+  resources, from dir before asking parent: parent's classpath doesn't have
+  them, and searching every jar and directory of a large classpath for each
+  of thousands of classes is a big part of a start. Classes parent has too
+  (see write-shadowed!) load parent first. nil if dir lacks .shadowed."
+  ^DynamicClassLoader [^File dir ^ClassLoader parent]
+  (let [shadowed-file (io/file dir ".shadowed")]
+    (when (.exists shadowed-file)
+      (let [shadowed (edn/read-string (slurp shadowed-file))
+            defined  (java.util.concurrent.ConcurrentHashMap.)
+            locks    (java.util.concurrent.ConcurrentHashMap.)
+            own      (fn [^String name] (when-not (contains? shadowed name)
+                                          (let [f (io/file dir (class-file name))]
+                                            (when (.isFile f) f))))
+            loader   (promise)
+            load     (fn [^String name]
+                       (or (.invoke ^java.lang.reflect.Method in-memory-class nil (object-array [name]))
+                           (.get defined name)
+                           (if-let [^File f (own name)]
+                             (locking (.computeIfAbsent locks name (reify java.util.function.Function (apply [_ _] (Object.))))
+                               (or (.get defined name)
+                                   (let [c (.defineClass ^DynamicClassLoader @loader name
+                                             (Files/readAllBytes (.toPath f)) nil)]
+                                     (.put defined name c)
+                                     c)))
+                             (.loadClass parent name))))
+            dcl      (proxy [DynamicClassLoader] [parent]
+                       (loadClass
+                         ([name] (load name))
+                         ([name _resolve] (load name)))
+                       (getResource [^String name]
+                         ;; only plain relative names can be the entry's files
+                         (let [f (when-not (or (.startsWith name "/") (.contains name ".."))
+                                   (File. dir name))]
+                           (if (and f (.isFile f)
+                                    (not (and (.endsWith name ".class")
+                                              (contains? shadowed (-> name (subs 0 (- (count name) 6)) (.replace "/" "."))))))
+                             (.toURL (.toURI f))
+                             (.getResource parent name)))))]
+        (deliver loader dcl)
+        (.addURL dcl (.toURL (.toURI dir)))
+        dcl))))
+
 (declare hold!)
 
 (defn- load-compiler!
@@ -104,10 +171,10 @@
                                 ((requiring-resolve 'cljs.env/default-compiler-env))}
                   ((requiring-resolve 'cljs.analyzer/load-core)))]
     (if (.exists done)
-      (do
+      (let [dcl (or (cache-loader dir (.getContextClassLoader thread))
+                    (doto dcl (.addURL (.toURL (.toURI dir)))))]
         ;; when it was last used, see prune!
         (.setLastModified done (System/currentTimeMillis))
-        (.addURL dcl (.toURL (.toURI dir)))
         ;; threads started from now on inherit it
         (.setContextClassLoader thread dcl)
         (hold! dir)
@@ -120,6 +187,7 @@
           (require 'cljf.esm)
           (core))
         (store-goog-dependencies! tmp)
+        (write-shadowed! tmp (.getContextClassLoader thread))
         (spit (io/file tmp ".complete") "")
         (try
           (Files/move (.toPath tmp) (.toPath dir) (into-array [StandardCopyOption/ATOMIC_MOVE]))
