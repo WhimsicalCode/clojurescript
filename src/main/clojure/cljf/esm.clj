@@ -116,8 +116,11 @@
   [namespaces output-dir]
   (let [pool  (Executors/newFixedThreadPool (.availableProcessors (Runtime/getRuntime)))
         seen  (java.util.concurrent.ConcurrentHashMap.)
-        tasks (java.util.concurrent.atomic.AtomicInteger. 0)
+        ;; one for this thread until it has submitted every root: tasks
+        ;; finishing meanwhile mustn't count down to none before then
+        tasks (java.util.concurrent.atomic.AtomicInteger. 1)
         done  (java.util.concurrent.CountDownLatch. 1)
+        finish! #(when (zero? (.decrementAndGet tasks)) (.countDown done))
         visit (fn visit [ns]
                 (when (nil? (.putIfAbsent seen ns true))
                   (.incrementAndGet tasks)
@@ -132,12 +135,13 @@
                         ;; find-sources' walk reports it
                         (catch Throwable _)
                         (finally
-                          (when (zero? (.decrementAndGet tasks))
-                            (.countDown done))))))))]
+                          (finish!)))))))]
     (try
-      (run! visit (map symbol namespaces))
-      (when (pos? (.get tasks))
-        (.await done))
+      (try
+        (run! visit (map symbol namespaces))
+        (finally
+          (finish!)))
+      (.await done)
       (finally
         (.shutdown pool)))))
 
