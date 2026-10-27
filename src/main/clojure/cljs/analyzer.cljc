@@ -732,13 +732,17 @@
 
 #?(:clj
    (defn load-core []
+     ;; checked again holding the lock, and marked loaded once loaded: under
+     ;; cljf.esm's :parallel-build another thread (the macro preloader) may
+     ;; be loading them, which this one waits for rather than interning
+     ;; macros not defined yet
      (when (not @-cljs-macros-loaded)
-       (reset! -cljs-macros-loaded true)
-       (if *cljs-macros-is-classpath*
-         (locking load-mutex
-           (load *cljs-macros-path*))
-         (locking load-mutex
-           (load-file *cljs-macros-path*))))
+       (locking load-mutex
+         (when (not @-cljs-macros-loaded)
+           (if *cljs-macros-is-classpath*
+             (load *cljs-macros-path*)
+             (load-file *cljs-macros-path*))
+           (reset! -cljs-macros-loaded true))))
      (intern-macros 'cljs.core)))
 
 #?(:clj
