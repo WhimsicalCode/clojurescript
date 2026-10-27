@@ -92,6 +92,8 @@
 (defn- class-file [^String name]
   (str (.replace name \. \/) ".class"))
 
+(declare write-pack!)
+
 (defn write-shadowed!
   "Records in cache entry dir (being written) the names of its classes that
   parent has too, which cache-loader loads parent first."
@@ -103,7 +105,50 @@
                       (map #(-> ^String % (subs (inc root)) (subs 0 (- (count %) root 7)) (.replace File/separator ".")))
                       (filter #(.getResource parent (class-file %)))
                       (into (sorted-set)))]
-    (spit (io/file dir ".shadowed") (pr-str shadowed))))
+    (spit (io/file dir ".shadowed") (pr-str shadowed))
+    (write-pack! dir)))
+
+(defn write-pack!
+  "Writes the classes of cache entry dir into one file, .pack: reading
+  thousands of small class files one by one is a good part of loading
+  them. Each class is its name and its bytes. Written to a temporary file,
+  then renamed: another process may read it meanwhile."
+  [^File dir]
+  (let [root  (count (.getPath dir))
+        files (->> (file-seq dir)
+                   (filter #(and (.isFile ^File %) (.endsWith (.getName ^File %) ".class"))))
+        pack  (io/file dir ".pack")
+        tmp   (io/file dir (str ".pack.tmp-" (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime)))]
+    (with-open [out (java.io.DataOutputStream. (java.io.BufferedOutputStream. (java.io.FileOutputStream. tmp) 65536))]
+      (doseq [^File f files
+              :let [path  (.getPath f)
+                    name  (-> path (subs (inc root)) (subs 0 (- (count path) root 7)) (.replace File/separator "."))
+                    bytes (Files/readAllBytes (.toPath f))]]
+        (.writeUTF out name)
+        (.writeInt out (alength bytes))
+        (.write out bytes)))
+    (Files/move (.toPath tmp) (.toPath pack)
+      (into-array [StandardCopyOption/REPLACE_EXISTING StandardCopyOption/ATOMIC_MOVE]))))
+
+(defn- read-pack
+  "The classes of cache entry dir's .pack, {name bytes} in a mutable map
+  (each removed once defined), nil without a readable one."
+  ^java.util.concurrent.ConcurrentHashMap [^File dir]
+  (let [pack (io/file dir ".pack")]
+    (when (.exists pack)
+      (try
+        (let [m (java.util.concurrent.ConcurrentHashMap.)]
+          (with-open [in (java.io.DataInputStream. (java.io.BufferedInputStream. (java.io.FileInputStream. pack) 65536))]
+            (loop []
+              (when (pos? (.available in))
+                (let [name  (.readUTF in)
+                      bytes (byte-array (.readInt in))]
+                  (.readFully in bytes)
+                  (.put m name bytes)
+                  (recur)))))
+          m)
+        ;; a damaged pack: the class files are there
+        (catch java.io.IOException _ nil)))))
 
 (def ^:private ^java.lang.reflect.Method in-memory-class
   "DynamicClassLoader's (package private) lookup of the classes the Clojure
@@ -122,6 +167,10 @@
   (let [shadowed-file (io/file dir ".shadowed")]
     (when (.exists shadowed-file)
       (let [shadowed (edn/read-string (slurp shadowed-file))
+            ;; entries written before packs existed get one
+            _        (when-not (.exists (io/file dir ".pack"))
+                       (try (write-pack! dir) (catch Exception _)))
+            pack     (read-pack dir)
             defined  (java.util.concurrent.ConcurrentHashMap.)
             locks    (java.util.concurrent.ConcurrentHashMap.)
             own      (fn [^String name] (when-not (contains? shadowed name)
@@ -135,7 +184,9 @@
                              (locking (.computeIfAbsent locks name (reify java.util.function.Function (apply [_ _] (Object.))))
                                (or (.get defined name)
                                    (let [c (.defineClass ^DynamicClassLoader @loader name
-                                             (Files/readAllBytes (.toPath f)) nil)]
+                                             (or (some-> pack (.remove name))
+                                                 (Files/readAllBytes (.toPath f)))
+                                             nil)]
                                      (.put defined name c)
                                      c)))
                              (.loadClass parent name))))
