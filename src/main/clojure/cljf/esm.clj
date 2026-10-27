@@ -663,6 +663,70 @@
                         " compiler's no-clojurescript directory.")
                {:resources (into {} dupes)})))))
 
+(declare build*)
+
+(defn- classpath-entries []
+  (string/split (System/getProperty "java.class.path") (re-pattern File/pathSeparator)))
+
+(defn- macro-cache-key
+  "Identifies the Clojure code macro namespaces load: the classpath, the
+  Clojure and Java versions, and the path, modification time and size of
+  the jars and of every Clojure source in the classpath directories (except
+  the output directory, which has copies of jars' sources)."
+  [output-dir]
+  (let [output (.getCanonicalPath (io/file output-dir))
+        md     (java.security.MessageDigest/getInstance "SHA-1")
+        add!   (fn [& xs] (.update md (.getBytes (str (string/join "\t" xs) "\n") "UTF-8")))]
+    (add! (clojure-version) (System/getProperty "java.version") (util/clojurescript-version))
+    (doseq [entry (classpath-entries)
+            :let [f (io/file entry)]]
+      (add! entry (.lastModified f) (.length f))
+      (when (and (.isDirectory f)
+                 (not (string/starts-with? (str output File/separator) (str (.getCanonicalPath f) File/separator))))
+        (doseq [^File src (sort (file-seq f))
+                :when (and (.isFile src) (re-find #"\.clj[c]?$" (.getName src)))]
+          (add! (.getPath src) (.lastModified src) (.length src)))))
+    (apply str (map #(format "%02x" %) (.digest md)))))
+
+(defn- with-aot-macros
+  "Under :aot-macros, calls f loading Clojure namespaces (the macro
+  namespaces) from classes compiled by an earlier build, or compiling them
+  to classes (*compile-files*) as they load. Clojure loads a namespace's
+  class instead of its source when it's newer. The classes are kept in
+  :output-dir under a key of all Clojure sources (macro-cache-key), any
+  change of them compiles them again."
+  [{:keys [aot-macros output-dir]} f]
+  (if-not aot-macros
+    (f)
+    (let [root   (io/file output-dir "cljs-esm-macros")
+          key    (macro-cache-key output-dir)
+          dir    (io/file root key)
+          done   (io/file dir ".complete")
+          ready? (.exists done)
+          thread (Thread/currentThread)
+          loader (.getContextClassLoader thread)
+          dcl    (clojure.lang.DynamicClassLoader. (clojure.lang.RT/baseLoader))]
+      (when-not ready?
+        ;; the classes of other keys are stale
+        (doseq [^File old (.listFiles root)]
+          (when (.isDirectory old)
+            (doseq [^File x (reverse (file-seq old))] (.delete x))))
+        (.mkdirs dir))
+      (.addURL dcl (.toURL (.toURI dir)))
+      ;; threads started by the build inherit it
+      (.setContextClassLoader thread dcl)
+      (try
+        (let [ret (if ready?
+                    (f)
+                    (binding [*compile-files* true
+                              *compile-path*  (.getPath dir)]
+                      (f)))]
+          (when-not ready?
+            (spit done key))
+          ret)
+        (finally
+          (.setContextClassLoader thread loader))))))
+
 (defn build
   "Compiles the namespaces in :main (a symbol or a collection of symbols) and
   their dependencies to ES modules in :output-dir. Returns the compiled
@@ -676,6 +740,10 @@
    (build opts (env/default-compiler-env (merge default-opts opts))))
   ([opts compiler-env]
    (let [opts (prepare-opts opts)]
+     (with-aot-macros opts #(build* opts compiler-env)))))
+
+(defn- build* [opts compiler-env]
+  (do
      (with-bindings (assoc (compiler-bindings opts)
                       #'*generated-sources* (if (:test-runner opts)
                                               (generate-test-runner opts)
@@ -715,7 +783,7 @@
              (util/debug-prn
                (format "Compiled %d namespaces in %.1fs" (count inputs)
                  (/ (- (System/nanoTime) start) 1e9))))
-           (map :ns inputs)))))))
+           (map :ns inputs))))))
 
 (def ^:private stdout
   "The process' standard output, events go there from any thread, i.e. the
