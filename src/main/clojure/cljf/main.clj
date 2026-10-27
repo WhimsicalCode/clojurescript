@@ -26,7 +26,9 @@
            [java.nio.file Files StandardCopyOption]
            [java.security MessageDigest]))
 
-(defn- cache-root ^File []
+(defn cache-dir
+  "Directory name of the per-user cache, see the namespace doc."
+  ^File [name]
   (let [env  #(not-empty (System/getenv %))
         home (System/getProperty "user.home")
         os   (string/lower-case (System/getProperty "os.name"))]
@@ -36,7 +38,10 @@
         (string/includes? os "mac") (io/file home "Library" "Caches" "cljf")
         (string/includes? os "windows") (io/file (or (env "LOCALAPPDATA") home) "cljf")
         :else (io/file (or (env "XDG_CACHE_HOME") (io/file home ".cache")) "cljf"))
-      "compiler-classes")))
+      name)))
+
+(defn- cache-root ^File []
+  (cache-dir "compiler-classes"))
 
 (defn- source-root
   "The classpath root of resource path: a directory, or a jar file."
@@ -119,17 +124,19 @@
           (catch java.io.IOException _
             (doseq [^File f (reverse (file-seq tmp))] (.delete f))))))))
 
-(defn- prune!
-  "Deletes the classes of other keys not used for a week (a running compiler
-  may still load classes from them)."
-  []
-  (let [week (* 7 24 3600 1000)
-        now  (System/currentTimeMillis)]
-    (doseq [^File dir (.listFiles (cache-root))
-            :let [done (io/file dir ".complete")]
-            :when (and (.isDirectory dir)
-                       (< (if (.exists done) (.lastModified done) (.lastModified dir)) (- now week)))]
-      (doseq [^File f (reverse (file-seq dir))] (.delete f)))))
+(defn prune!
+  "Deletes the entries (directories) of root, the compiler's classes by
+  default, of other keys not used for a week: a running compiler may still
+  load classes from them."
+  ([] (prune! (cache-root)))
+  ([^File root]
+   (let [week (* 7 24 3600 1000)
+         now  (System/currentTimeMillis)]
+     (doseq [^File dir (.listFiles root)
+             :let [done (io/file dir ".complete")]
+             :when (and (.isDirectory dir)
+                        (< (if (.exists done) (.lastModified done) (.lastModified dir)) (- now week)))]
+       (doseq [^File f (reverse (file-seq dir))] (.delete f))))))
 
 (defn -main
   "Usage: clojure -M -m cljf.main [build|watch] options..., see cljf.esm/-main."

@@ -723,40 +723,52 @@
   "Under :aot-macros, calls f loading Clojure namespaces (the macro
   namespaces) from classes compiled by an earlier build, or compiling them
   to classes (*compile-files*) as they load. Clojure loads a namespace's
-  class instead of its source when it's newer. The classes are kept in
-  :output-dir under a key of all Clojure sources (macro-cache-key), any
-  change of them compiles them again."
+  class instead of its source when it's newer. The classes are kept in the
+  per-user cache (macro-classes/, see cljf.main) under a key of all Clojure
+  sources (macro-cache-key), shared by builds into other output directories;
+  any change of them compiles them again. Classes being compiled go to a
+  directory of the build's own, renamed to the key's once the build
+  succeeds."
   [{:keys [aot-macros output-dir]} f]
   (if-not aot-macros
     (f)
-    (let [root   (io/file output-dir "cljs-esm-macros")
+    (let [root   ((requiring-resolve 'cljf.main/cache-dir) "macro-classes")
           key    (macro-cache-key output-dir)
           dir    (io/file root key)
           done   (io/file dir ".complete")
           ready? (.exists done)
+          tmp    (when-not ready?
+                   (io/file root (str key ".tmp-" (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime))))
           thread (Thread/currentThread)
           loader (.getContextClassLoader thread)
           dcl    (clojure.lang.DynamicClassLoader. (clojure.lang.RT/baseLoader))]
-      (when-not ready?
-        ;; the classes of other keys are stale
-        (doseq [^File old (.listFiles root)]
-          (when (.isDirectory old)
-            (doseq [^File x (reverse (file-seq old))] (.delete x))))
-        (.mkdirs dir))
-      (.addURL dcl (.toURL (.toURI dir)))
+      (if ready?
+        ;; when it was last used, see cljf.main/prune!
+        (.setLastModified done (System/currentTimeMillis))
+        (.mkdirs tmp))
+      (.addURL dcl (.toURL (.toURI (or tmp dir))))
       ;; threads started by the build inherit it
       (.setContextClassLoader thread dcl)
       (try
         (let [ret (if ready?
                     (f)
                     (binding [*compile-files* true
-                              *compile-path*  (.getPath dir)]
+                              *compile-path*  (.getPath tmp)]
                       (f)))]
-          (when-not ready?
-            (spit done key))
+          (when tmp
+            (spit (io/file tmp ".complete") key)
+            (try
+              (java.nio.file.Files/move (.toPath tmp) (.toPath dir)
+                (into-array [java.nio.file.StandardCopyOption/ATOMIC_MOVE]))
+              ;; another build stored them meanwhile
+              (catch java.io.IOException _)))
           ret)
         (finally
-          (.setContextClassLoader thread loader))))))
+          (.setContextClassLoader thread loader)
+          ;; a failed build's, or one another build stored meanwhile
+          (when (and tmp (.exists tmp))
+            (doseq [^File x (reverse (file-seq tmp))] (.delete x)))
+          ((requiring-resolve 'cljf.main/prune!) root))))))
 
 (defn build
   "Compiles the namespaces in :main (a symbol or a collection of symbols) and
