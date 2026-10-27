@@ -644,6 +644,27 @@
    (def load-mutex (Object.)))
 
 #?(:clj
+   (defn- loaded-lib?
+     "Whether Clojure namespace lib finished loading: require adds it to
+     *loaded-libs* after loading it."
+     [lib]
+     (contains? @@#'clojure.core/*loaded-libs* lib)))
+
+#?(:clj
+   (defn- require-macros-ns
+     "Requires macro namespace nsym (with flag k, :reload or :reload-all, if
+     any) holding load-mutex. Namespaces loaded already aren't required
+     again: every namespace compiled requires its macro namespaces, which
+     would serialize parallel compiles on the lock."
+     [nsym k]
+     (if k
+       (locking load-mutex
+         (clojure.core/require nsym k))
+       (when-not (loaded-lib? nsym)
+         (locking load-mutex
+           (clojure.core/require nsym))))))
+
+#?(:clj
    (defn- load-data-reader-file [mappings ^java.net.URL url]
      (with-open [rdr (readers/input-stream-push-back-reader (.openStream url))]
        (binding [*file* (.getFile url)]
@@ -4644,21 +4665,13 @@ x                          (not (contains? ret :info)))
                (let [k (or (:use-macros reload)
                          (get-in reloads [:use-macros nsym])
                          (and (= nsym name) *reload-macros* :reload))]
-                 (if k
-                   (locking load-mutex
-                     (clojure.core/require nsym k))
-                   (locking load-mutex
-                     (clojure.core/require nsym)))
+                 (require-macros-ns nsym k)
                  (intern-macros nsym k)))
              (doseq [nsym (vals require-macros)]
                (let [k (or (:require-macros reload)
                          (get-in reloads [:require-macros nsym])
                          (and (= nsym name) *reload-macros* :reload))]
-                 (if k
-                   (locking load-mutex
-                     (clojure.core/require nsym k))
-                   (locking load-mutex
-                     (clojure.core/require nsym)))
+                 (require-macros-ns nsym k)
                  (intern-macros nsym k)))
              (-> ast
                (check-use-macros-inferring-missing env)
@@ -5112,9 +5125,12 @@ x                          (not (contains? ret :info)))
    (defn- get-spec-vars
      []
      (when-let [spec-ns (find-ns 'cljs.spec.alpha)]
-       (locking load-mutex
+       (if (loaded-lib? 'cljs.spec.alpha)
          {:registry-ref (ns-resolve spec-ns 'registry-ref)
-          :speced-vars  (ns-resolve spec-ns '_speced_vars)})))
+          :speced-vars  (ns-resolve spec-ns '_speced_vars)}
+         (locking load-mutex
+           {:registry-ref (ns-resolve spec-ns 'registry-ref)
+            :speced-vars  (ns-resolve spec-ns '_speced_vars)}))))
    :cljs
    (let [registry-ref (delay (get (ns-interns* 'cljs.spec.alpha$macros) 'registry-ref))
          ;; Here, we look up the symbol '-speced-vars because ns-interns*
