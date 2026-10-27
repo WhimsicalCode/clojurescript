@@ -348,7 +348,18 @@
                    (filter #(< (used %) (- now week)) (take keep-entries entries))
                    (filter #(< (used %) (- now hour)) (drop keep-entries entries)))]
      (doseq [^File dir stale
-             ^File f (reverse (file-seq dir))]
+             :let [;; renamed first (or unmarked if it can't be): a
+                   ;; partly deleted entry never looks complete to another
+                   ;; process, and an interrupted prune leaves a .tmp-
+                   ;; directory the next one deletes
+                   ^File gone (if (tmp? dir)
+                                dir
+                                (let [t (io/file (str (.getPath dir) ".tmp-prune-"
+                                                   (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime)))]
+                                  (if (.renameTo dir t)
+                                    t
+                                    (do (.delete (io/file dir ".complete")) dir))))]
+             ^File f (reverse (file-seq gone))]
        (.delete f)))))
 
 (defn -main
