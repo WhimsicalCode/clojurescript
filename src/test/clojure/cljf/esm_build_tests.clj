@@ -202,18 +202,21 @@
         dep     (write-source! dir 'test.fdep "(ns test.fdep (:require [test.fbad]))" ms)
         dep2    (write-source! dir 'test.fdep2 "(ns test.fdep2 (:require [test.fdep]))" ms)
         indep   (write-source! dir 'test.findep "(ns test.findep) (defn h [x] x)" ms)
-        main    (write-source! dir 'test.fmain "(ns test.fmain (:require [test.fdep2] [test.findep]))" ms)
+        ;; requires both the failed namespace and one that compiles: never ready
+        diamond (write-source! dir 'test.fdia "(ns test.fdia (:require [test.fbad] [test.findep]))" ms)
+        main    (write-source! dir 'test.fmain "(ns test.fmain (:require [test.fdep2] [test.findep] [test.fdia]))" ms)
         err     (deref
                   (future
                     (try
-                      (binding [esm/*generated-sources* (into {} [bad dep dep2 indep main])]
+                      (binding [esm/*generated-sources* (into {} [bad dep dep2 indep diamond main])]
                         (esm/build {:main 'test.fmain :output-dir (str (io/file dir "out")) :parallel-build true}))
                       ::no-error
                       (catch Throwable e e)))
                   60000 ::timeout)]
     (is (instance? Throwable err) "fails, without waiting forever for the failed namespace's dependents")
     (is (.exists (io/file dir "out" "test" "findep.js")) "a namespace not requiring the failed one is compiled")
-    (is (not (.exists (io/file dir "out" "test" "fdep2.js"))) "its dependents, transitively, aren't")))
+    (is (not (.exists (io/file dir "out" "test" "fdep2.js"))) "its dependents, transitively, aren't")
+    (is (not (.exists (io/file dir "out" "test" "fdia.js"))) "nor one also requiring a namespace that compiled")))
 
 (deftest parse-ns-cache-without-a-compiler-env
   ;; the watcher looks up changed files' namespaces outside any compiler env,
