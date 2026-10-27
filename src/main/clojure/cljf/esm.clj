@@ -753,7 +753,12 @@
       ;; threads started by the build inherit it
       (.setContextClassLoader thread dcl)
       (try
-        (let [ret (if ready?
+        (let [;; and the loader require uses while one is bound, i.e. when
+              ;; building from a REPL or a script (clojure -i)
+              f   #(if (.isBound clojure.lang.Compiler/LOADER)
+                     (with-bindings {clojure.lang.Compiler/LOADER dcl} (f))
+                     (f))
+              ret (if ready?
                     (f)
                     (binding [*compile-files* true
                               *compile-path*  (.getPath tmp)]
