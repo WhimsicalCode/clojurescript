@@ -53,6 +53,12 @@
       "jar"  (io/file (.toURI (URL. (first (string/split (.getPath url) #"!/")))))
       nil)))
 
+(defn sha1-hex
+  "The SHA-1 of string s, in hex."
+  [^String s]
+  (let [md (MessageDigest/getInstance "SHA-1")]
+    (apply str (map #(format "%02x" %) (.digest md (.getBytes s "UTF-8"))))))
+
 (defn- cache-key
   "The key of the compiler's classes, see the namespace doc."
   []

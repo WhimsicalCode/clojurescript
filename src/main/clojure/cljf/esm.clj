@@ -535,30 +535,44 @@
 
 ;; Loading a macro namespace (Clojure) holds the analyzer's load-mutex, the
 ;; namespaces using it wait meanwhile.
-(def ^:private ^:dynamic *macro-key*
-  "Under :aot-macros, the key of the Clojure sources (macro-cache-key)."
+(def ^:private ^:dynamic *macro-dir*
+  "Under :aot-macros, the per-user cache entry of the macro namespaces'
+  classes (or the directory it's being written in): what they are depends
+  only on its key, the Clojure sources and classpath."
   nil)
 
-(defn- macro-order-file ^File [{:keys [output-dir]}]
-  (io/file output-dir "cljs-esm-macro-order.edn"))
+(defn- macro-order-file
+  "The file of the order the build's macro namespaces loaded in, in the
+  macro classes' cache entry, per build configuration: the namespaces a
+  build requires depend on its mains, preloads and profile."
+  ^File [opts]
+  (when-let [dir *macro-dir*]
+    (io/file dir (str "macro-order-"
+                      ((requiring-resolve 'cljf.main/sha1-hex)
+                       (pr-str [(vec (mains opts)) (:mode opts) (:test-runner opts) (:js-entries opts)]))
+                      ".edn"))))
 
 (defn- previous-macro-order
-  "The macro namespaces the previous build into the output directory loaded,
-  in its order, if it had the same Clojure sources (*macro-key*): the order
-  of a build's own, valid for these sources. nil otherwise."
+  "The macro namespaces a previous build of the same configuration with the
+  same Clojure sources loaded, in its order: a build's own dependency order,
+  valid for these sources. nil without one."
   [opts]
-  (when-let [key *macro-key*]
-    (let [f (macro-order-file opts)]
-      (when (.exists f)
-        (try
-          (let [{stored :key :keys [nses]} (edn/read-string (slurp f))]
-            (when (= key stored) nses))
-          (catch Exception _ nil))))))
+  (when-let [f (macro-order-file opts)]
+    (when (.exists f)
+      (try
+        (:nses (edn/read-string (slurp f)))
+        (catch Exception _ nil)))))
 
 (defn- store-macro-order! [opts nses]
-  (when-let [key *macro-key*]
+  (when-let [f (macro-order-file opts)]
     (try
-      (spit-if-changed (macro-order-file opts) (pr-str {:key key :nses (vec nses)}))
+      (let [content (pr-str {:nses (vec nses)})]
+        (when-not (and (.exists f) (= content (slurp f)))
+          (let [tmp (io/file (str (.getPath f) ".tmp-" (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime)))]
+            (spit tmp content)
+            (java.nio.file.Files/move (.toPath tmp) (.toPath f)
+              (into-array [java.nio.file.StandardCopyOption/REPLACE_EXISTING
+                           java.nio.file.StandardCopyOption/ATOMIC_MOVE])))))
       ;; an optimization
       (catch Exception _))))
 
@@ -815,7 +829,7 @@
       (try
         (let [;; and the loader require uses while one is bound, i.e. when
               ;; building from a REPL or a script (clojure -i)
-              f   #(binding [*macro-key* key]
+              f   #(binding [*macro-dir* (or tmp dir)]
                      (if (.isBound clojure.lang.Compiler/LOADER)
                        (with-bindings {clojure.lang.Compiler/LOADER dcl} (f))
                        (f)))
