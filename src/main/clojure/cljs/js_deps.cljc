@@ -324,6 +324,22 @@ JavaScript library containing provide/require 'declarations'."
 ;; don't need to bother parsing files in Closure Library. But it's also a
 ;; potential source of confusion as *other* Closure style libs will need to be
 ;; parsed, user won't typically provide a deps.js
+(defn- pmap-ordered
+  "(map f coll) in parallel, on a pool of its own (no agent threads left
+  behind), in coll's order."
+  [f coll]
+  (let [pool (java.util.concurrent.Executors/newFixedThreadPool
+               (.availableProcessors (Runtime/getRuntime)))]
+    (try
+      (->> (mapv (fn [x] (.submit pool ^Callable (fn [] (f x)))) coll)
+           (mapv (fn [^java.util.concurrent.Future fut]
+                   (try
+                     (.get fut)
+                     (catch java.util.concurrent.ExecutionException e
+                       (throw (or (.getCause e) e)))))))
+      (finally
+        (.shutdown pool)))))
+
 (defn goog-dependencies*
   "Create an index of Google dependencies by namespace and file name from
   goog/deps.js"
@@ -337,7 +353,8 @@ JavaScript library containing provide/require 'declarations'."
            (remove nil?)
            (map #(drop 1 %))
            (remove #(.startsWith ^String (first %) "../../third_party"))
-           (map
+           ;; reading each file's require-types is most of the time
+           (pmap-ordered
              (fn [[file provides requires load-opts-str]]
                (let [{:strs [lang module]}
                      (-> (string/replace load-opts-str "'" "\"") (json/read-str))

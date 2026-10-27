@@ -109,10 +109,48 @@
           preloads (main-namespaces opts) (js-entry-namespaces opts)
           (some-> repl-mains deref sort)))
 
+(defn- parse-sources-parallel!
+  "Parses the ns forms of namespaces and their transitive dependencies with
+  a pool of threads, filling parse-ns' cache for find-sources' walk, which
+  is sequential (its order is the build's)."
+  [namespaces output-dir]
+  (let [pool  (Executors/newFixedThreadPool (.availableProcessors (Runtime/getRuntime)))
+        seen  (java.util.concurrent.ConcurrentHashMap.)
+        ;; one for this thread until it has submitted every root: tasks
+        ;; finishing meanwhile mustn't count down to none before then
+        tasks (java.util.concurrent.atomic.AtomicInteger. 1)
+        done  (java.util.concurrent.CountDownLatch. 1)
+        finish! #(when (zero? (.decrementAndGet tasks)) (.countDown done))
+        visit (fn visit [ns]
+                (when (nil? (.putIfAbsent seen ns true))
+                  (.incrementAndGet tasks)
+                  (.execute pool
+                    ^Runnable
+                    (bound-fn []
+                      (try
+                        (when-let [url (source-for-ns ns)]
+                          (let [ns-info (parse-ns (source-file url ns output-dir))]
+                            (doseq [r (cons 'cljs.core (map symbol (remove string? (:requires ns-info))))]
+                              (visit r))))
+                        ;; find-sources' walk reports it
+                        (catch Throwable _)
+                        (finally
+                          (finish!)))))))]
+    (try
+      (try
+        (run! visit (map symbol namespaces))
+        (finally
+          (finish!)))
+      (.await done)
+      (finally
+        (.shutdown pool)))))
+
 (defn find-sources
   "Returns the parsed ns info of namespaces and their transitive ClojureScript
   dependencies in dependency order."
-  [namespaces {:keys [output-dir]}]
+  [namespaces {:keys [output-dir parallel-build]}]
+  (when parallel-build
+    (parse-sources-parallel! namespaces output-dir))
   (letfn [(visit [{:keys [seen order] :as state} ns]
             (if (contains? seen ns)
               state
@@ -207,6 +245,11 @@
            (str "goog.loadModule(function(exports) {'use strict';\n" src "\n;return exports;});\n")
            src))))
 
+(def ^:private installed-goog-libs
+  "The Closure Library namespaces install-goog-libs wrote last, by output
+  directory."
+  (atom {}))
+
 (defn install-goog-libs
   "Writes the Closure Library namespaces used without an ES module shim
   (recorded by the compiler as :cljf.esm/goog-libs of the namespaces using
@@ -215,8 +258,14 @@
   [compiler-env {:keys [output-dir]}]
   (let [idx  (:js-dependency-index @compiler-env)
         lib  #(deps/closure-lib idx %)
-        nses (into (sorted-set) (mapcat ::goog-libs) (vals (::ana/namespaces @compiler-env)))]
-    (when (seq nses)
+        nses (into (sorted-set) (mapcat ::goog-libs) (vals (::ana/namespaces @compiler-env)))
+        out  (.getCanonicalPath (io/file output-dir))]
+    ;; the modules depend on the namespaces only (and the classpath, which a
+    ;; process doesn't change): the watcher's recompiles skip writing them
+    ;; again while they're the ones written last, and base.js is in place
+    (when (and (seq nses)
+               (not (and (= nses (get @installed-goog-libs out))
+                         (.exists (io/file output-dir goog-base)))))
       (let [files (loop [queue (vec (keep lib nses)) seen {}]
                     (if-let [{:keys [file requires] :as info} (first queue)]
                       (if (or (contains? seen file) (= "goog/base.js" file))
@@ -234,7 +283,8 @@
                 (str "import { goog } from \"" (relative-import out goog-base) "\";\n"
                      (when-not (= "goog/base.js" file)
                        (str "import \"" (relative-import out (str "goog-lib/" file)) "\";\n"))
-                     "export default goog.module.get(\"" ns "\");\n")))))))))
+                     "export default goog.module.get(\"" ns "\");\n")))))
+        (swap! installed-goog-libs assoc out nses)))))
 
 (defn- write-package-json
   "Marks the output directory as ES modules for Node.js."
@@ -347,6 +397,96 @@
       (let [out (slurp dest)]
         (not-every? #(string/includes? out (str "import \"" (comp/esm-ns-path ns %) "\";")) preloads)))))
 
+(def ^:private core-exts
+  "The output files of cljs.core, its compiled module's last: compile-ns
+  checks that one."
+  [".js.map" ".d.ts" ".cljs.cache.json" ".js"])
+
+(defn- core-output ^File [opts ext]
+  (let [js (.getPath (output-file 'cljs.core opts))]
+    (io/file (str (subs js 0 (- (count js) 3)) ext))))
+
+(defn- core-cache-dir
+  "The per-user cache's entry of cljs.core's output compiled with opts:
+  keyed by the compiler (a hash of its sources when run from them),
+  cljs.core's source (its path and content), and the options its output
+  depends on."
+  ^File [^File source-file opts]
+  (io/file ((requiring-resolve 'cljf.main/cache-dir) "cljs-core")
+    ((requiring-resolve 'cljf.main/sha1-hex)
+     (pr-str [(util/clojurescript-version)
+              (.getCanonicalPath source-file)
+              ((requiring-resolve 'cljf.main/file-hash) source-file)
+              (into (sorted-map)
+                (-> (ana/build-affecting-options opts)
+                    (merge (select-keys opts [:source-map :source-map-path :source-map-pretty-print
+                                              :source-map-timestamp :esm-dts :emit-constants]))
+                    (update :closure-defines #(into (sorted-map) %))))]))))
+
+(defn- rewrite-map-file
+  "Source map JSON map-json with the module path old (its \"file\") replaced
+  by new, written as the map writes it: compact maps escape slashes, pretty
+  printed ones (:source-map-pretty-print) don't. nil if map-json doesn't
+  have it."
+  [^String map-json old new]
+  (some (fn [escape?]
+          (let [from (json/write-str old :escape-slash escape?)]
+            (when (string/includes? map-json from)
+              (string/replace map-json from (json/write-str new :escape-slash escape?)))))
+    [true false]))
+
+(defn- restore-core!
+  "When the output directory lacks cljs.core's output (a cold build), copies
+  it from the per-user cache, compiled by an earlier build with the same
+  compiler, cljs.core and options: the build then reads it as its own up to
+  date output (the analysis cache round trips exactly). Returns whether it
+  did."
+  [{:keys [source-file]} opts]
+  (let [dir  (core-cache-dir source-file opts)
+        dest (output-file 'cljs.core opts)]
+    (when (and (.exists (io/file dir ".complete")) (not (.exists dest)))
+      (let [old   (slurp (io/file dir "file"))
+            mtime (.lastModified ^File source-file)
+            ;; the map names its module by absolute path; cljs.core is
+            ;; compiled instead if it can't be renamed
+            map   (when (some #{".js.map"} core-exts)
+                    (or (rewrite-map-file (slurp (io/file dir "core.js.map")) old (comp/url-path dest))
+                        ::stale))]
+        (when-not (= ::stale map)
+          ((requiring-resolve 'cljf.main/hold!) dir)
+          (util/mkdirs dest)
+          (doseq [ext core-exts
+                  :let [from (io/file dir (str "core" ext))
+                        to   (core-output opts ext)]]
+            (if (= ext ".js.map")
+              (spit to map)
+              (io/copy from to))
+            ;; as compile-file leaves them
+            (when (#{".js" ".cljs.cache.json"} ext)
+              (.setLastModified to mtime)))
+          true)))))
+
+(defn- store-core!
+  "Copies cljs.core's output this build compiled to the per-user cache,
+  unless it has it."
+  [{:keys [source-file]} opts]
+  (let [dir (core-cache-dir source-file opts)]
+    (when (and (not (.exists (io/file dir ".complete")))
+               (every? #(.exists (core-output opts %)) core-exts))
+      (let [tmp (io/file (str dir ".tmp-" (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime)))]
+        (try
+          (.mkdirs tmp)
+          (doseq [ext core-exts]
+            (io/copy (core-output opts ext) (io/file tmp (str "core" ext))))
+          (spit (io/file tmp "file") (comp/url-path (output-file 'cljs.core opts)))
+          (spit (io/file tmp ".complete") "")
+          (java.nio.file.Files/move (.toPath tmp) (.toPath dir)
+            (into-array [java.nio.file.StandardCopyOption/ATOMIC_MOVE]))
+          ((requiring-resolve 'cljf.main/prune!) (.getParentFile dir))
+          ;; another build stored it meanwhile, or the cache isn't writable
+          (catch Exception _
+            ((requiring-resolve 'cljf.main/delete-tree!) tmp)))))))
+
 (defn- compile-ns
   "Compiles a namespace if its output isn't up to date, or when a namespace
   it requires was recompiled with a different api. Up to date namespaces
@@ -370,39 +510,219 @@
       (swap! *api-changed* conj ns))
     ret))
 
+(definterface ICompileTask
+  (^long taskIndex []))
+
+(defn- task-index ^long [^ICompileTask t]
+  (.taskIndex t))
+
 (defn- compile-parallel
   "Compiles inputs (in dependency order) with a pool of threads, a namespace
-  is compiled once all its dependencies have been."
+  is compiled once all its dependencies have been. A namespace is only
+  submitted to the pool once its dependencies are compiled: threads never
+  wait for each other, every thread compiles while there's a namespace
+  ready. Ready namespaces are compiled in dependency order (earliest
+  first), as they were started before: macros may read the analysis of
+  namespaces they don't require (i.e. sci's copy-var, of cljs.analyzer.api).
+  Their reads through cljs.analyzer.api wait for namespaces earlier in the
+  order (ana/*await-ns*), as a sequential build compiled them already, with
+  another pool thread compiling meanwhile. After a failure, the namespaces
+  not requiring the failed one are compiled still; throws the first failure
+  once they have been."
   [inputs opts]
-  (let [threads (or (:parallel-build-threads opts)
-                    (.availableProcessors (Runtime/getRuntime)))
-        pool    (Executors/newFixedThreadPool threads)
-        futures (atom {})]
+  (let [threads    (or (:parallel-build-threads opts)
+                       (.availableProcessors (Runtime/getRuntime)))
+        ^java.util.concurrent.ThreadPoolExecutor pool
+        (java.util.concurrent.ThreadPoolExecutor. (int threads) (int threads) 60
+          java.util.concurrent.TimeUnit/SECONDS
+          (java.util.concurrent.PriorityBlockingQueue.))
+        by-ns      (into {} (map (juxt :ns identity)) inputs)
+        ;; the dependencies earlier in the order, like waiting for the
+        ;; namespaces submitted before (a cycle doesn't wait forever)
+        index      (into {} (map-indexed (fn [i {:keys [ns]}] [ns i])) inputs)
+        deps       (into {}
+                     (map (fn [{:keys [ns requires]}]
+                            [ns (into #{} (comp (remove string?) (map symbol)
+                                            (filter #(when-let [i (index %)] (< i (index ns)))))
+                                  requires)]))
+                     inputs)
+        dependents (reduce-kv (fn [m ns ds] (reduce #(update %1 %2 (fnil conj []) ns) m ds)) {} deps)
+        remaining  (into {} (map (fn [[ns ds]] [ns (java.util.concurrent.atomic.AtomicInteger. (count ds))])) deps)
+        pending    (java.util.concurrent.atomic.AtomicInteger. (count inputs))
+        done       (java.util.concurrent.CountDownLatch. 1)
+        failure    (atom nil)
+        ;; counted down once each namespace is compiled (or failed)
+        compiled   (into {} (map (fn [{:keys [ns]}] [ns (java.util.concurrent.CountDownLatch. 1)])) inputs)
+        await-ns   (fn [target]
+                     (let [ti (index target)
+                           ci (index ana/*cljs-ns*)
+                           ^java.util.concurrent.CountDownLatch l (compiled target)]
+                       ;; only namespaces before the current one, which a
+                       ;; sequential build compiled already: never a cycle.
+                       ;; Not while holding the analyzer's load lock (a macro
+                       ;; namespace's top level resolving while it loads):
+                       ;; the awaited namespace's compile may need the lock
+                       (when (and ti ci (< (long ti) (long ci)) (pos? (.getCount l))
+                                  (not (Thread/holdsLock ana/load-mutex)))
+                         ;; another thread compiles meanwhile, the waiting one
+                         ;; holds a pool thread
+                         (locking pool
+                           (.setMaximumPoolSize pool (inc (.getMaximumPoolSize pool)))
+                           (.setCorePoolSize pool (inc (.getCorePoolSize pool))))
+                         (try
+                           (.await l)
+                           (finally
+                             (locking pool
+                               (.setCorePoolSize pool (dec (.getCorePoolSize pool)))
+                               (.setMaximumPoolSize pool (dec (.getMaximumPoolSize pool)))))))))
+        finish!    (fn [] (when (zero? (.decrementAndGet pending)) (.countDown done)))
+        ;; the namespaces requiring a failed one, transitively, are never
+        ;; ready: counted as finished, their waiters (await-ns) let go
+        skipped    (java.util.concurrent.ConcurrentHashMap/newKeySet)
+        skip!      (fn skip! [ns]
+                     (doseq [d (dependents ns)]
+                       (when (.add ^java.util.Set skipped d)
+                         (.countDown ^java.util.concurrent.CountDownLatch (compiled d))
+                         (skip! d)
+                         (finish!))))
+        submit     (fn submit [ns]
+                     (let [i    (long (index ns))
+                           task (bound-fn []
+                                  (try
+                                    (try
+                                      (compile-ns (by-ns ns) opts)
+                                      (finally
+                                        (.countDown ^java.util.concurrent.CountDownLatch (compiled ns))))
+                                    (doseq [d (dependents ns)]
+                                      (when (zero? (.decrementAndGet ^java.util.concurrent.atomic.AtomicInteger (remaining d)))
+                                        (submit d)))
+                                    (catch Throwable e
+                                      (compare-and-set! failure nil e)
+                                      (skip! ns)))
+                                  (finish!))]
+                       (.execute pool
+                         (reify
+                           Runnable
+                           (run [_] (task))
+                           ICompileTask
+                           (taskIndex [_] i)
+                           Comparable
+                           (compareTo [_ other]
+                             (Long/compare i (long (task-index other))))))))]
     (try
-      (doseq [{:keys [ns requires] :as input} inputs]
-        (let [deps (keep #(get @futures (symbol %)) (remove string? requires))
-              f    (.submit pool
-                     ^Callable
-                     (bound-fn []
-                       (doseq [^Future d deps] (.get d))
-                       (compile-ns input opts)))]
-          (swap! futures assoc ns f)))
-      (doseq [{:keys [ns]} inputs]
-        (.get ^Future (get @futures ns)))
-      (catch ExecutionException e
-        ;; the namespace's failure, not the futures waiting for it
-        (throw (loop [^Throwable e e]
-                 (if (and (instance? ExecutionException e) (ex-cause e))
-                   (recur (ex-cause e))
-                   e))))
+      (if (seq inputs)
+        (do
+          ;; the tasks' bound-fns capture it
+          (binding [ana/*await-ns* await-ns]
+            (doseq [{:keys [ns]} inputs
+                    :when (empty? (deps ns))]
+              (submit ns)))
+          (.await done))
+        nil)
+      (when-let [e @failure]
+        (throw e))
       (finally
         ;; after a failure, the namespaces not requiring the failed one are
         ;; compiled still (i.e. recompiled for a changed api, *api-changed*
-        ;; doesn't outlive the build), the ones requiring it fail getting
-        ;; it, and all of them finish before the build returns, i.e. before
-        ;; the watcher's next build
+        ;; doesn't outlive the build), the ones requiring it are skipped,
+        ;; and all of them finish before the build returns, i.e. before the
+        ;; watcher's next build
+        (doseq [[_ ^java.util.concurrent.CountDownLatch l] compiled] (.countDown l))
         (.shutdown pool)
         (.awaitTermination pool 1 TimeUnit/HOURS)))))
+
+;; Loading a macro namespace (Clojure) holds the analyzer's load-mutex, the
+;; namespaces using it wait meanwhile.
+(def ^:private ^:dynamic *macro-dir*
+  "Under :aot-macros, the per-user cache entry of the macro namespaces'
+  classes (or the directory it's being written in): what they are depends
+  only on its key, the Clojure sources and classpath."
+  nil)
+
+(defn- macro-order-file
+  "The file of the order the build's macro namespaces loaded in, in the
+  macro classes' cache entry, per build configuration: the namespaces a
+  build requires depend on its mains, preloads and profile."
+  ^File [opts]
+  (when-let [dir *macro-dir*]
+    (io/file dir (str "macro-order-"
+                      ((requiring-resolve 'cljf.main/sha1-hex)
+                       (pr-str [(vec (mains opts)) (:mode opts) (:test-runner opts) (:js-entries opts)]))
+                      ".edn"))))
+
+(defn- previous-macro-order
+  "The macro namespaces a previous build of the same configuration with the
+  same Clojure sources loaded, in its order: a build's own dependency order,
+  valid for these sources. nil without one."
+  [opts]
+  (when-let [f (macro-order-file opts)]
+    (when (.exists f)
+      (try
+        (:nses (edn/read-string (slurp f)))
+        (catch Exception _ nil)))))
+
+(defn- store-macro-order! [opts nses]
+  (when-let [f (macro-order-file opts)]
+    (try
+      (let [content (pr-str {:nses (vec nses)})]
+        (when-not (and (.exists f) (= content (slurp f)))
+          (let [tmp (io/file (str (.getPath f) ".tmp-" (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime)))]
+            (spit tmp content)
+            (java.nio.file.Files/move (.toPath tmp) (.toPath f)
+              (into-array [java.nio.file.StandardCopyOption/REPLACE_EXISTING
+                           java.nio.file.StandardCopyOption/ATOMIC_MOVE])))))
+      ;; an optimization
+      (catch Exception _))))
+
+(defn- build-macro-order
+  "The macro namespaces the inputs require, in dependency order."
+  [inputs]
+  (into []
+    (comp (mapcat (fn [{:keys [ast]}]
+                    (concat (vals (:require-macros ast)) (vals (:use-macros ast)))))
+          (distinct))
+    inputs))
+
+(defn- preload-macro-namespaces
+  "Under :parallel-build, starts loading macro namespaces in a thread, one at
+  a time: the namespaces compiled after cljs.core would otherwise wait for
+  each other's first loads. Loads head first, the order a previous build
+  with the same Clojure sources loaded (so while this one's namespaces are
+  found), then the namespaces given to the returned fn (the build's own, in
+  dependency order, those loaded already are skipped), nil ending the
+  queue. Macro namespaces' load order matters (sci.impl.copy-vars resolves
+  cljs.analyzer.api at load time), so only a build's order is used. Load
+  failures are left to the namespaces requiring them. Returns [add! future]."
+  [head]
+  (let [queue (LinkedBlockingQueue.)
+        end   (Object.)
+        pool  (Executors/newSingleThreadExecutor)]
+    (doseq [ns head] (.put queue ns))
+    (try
+      [(fn [nses]
+         (if nses
+           (doseq [ns nses] (.put queue ns))
+           (.put queue end)))
+       (.submit pool
+         ^Callable
+         (bound-fn []
+           ;; first what reading or compiling cljs.core needs, which the
+           ;; build waits for: its macros, and cljs.spec.alpha's for its
+           ;; specs (register-specs). The analyzer's lock isn't fair, so
+           ;; cljs.core waiting for it would wait for many of the others
+           (try
+             (ana/load-core)
+             (ana/require-macros-ns 'cljs.spec.alpha nil)
+             (catch Throwable _))
+           (loop []
+             (let [ns (.take queue)]
+               (when-not (identical? end ns)
+                 (try
+                   (ana/require-macros-ns ns nil)
+                   (catch Throwable _))
+                 (recur))))))]
+      (finally
+        (.shutdown pool)))))
 
 (defn- ensure-analyzed!
   "Namespaces up to date aren't recompiled, nor analyzed. Reads their
@@ -551,6 +871,106 @@
                         " compiler's no-clojurescript directory.")
                {:resources (into {} dupes)})))))
 
+(declare build*)
+
+(defn- classpath-entries []
+  (string/split (System/getProperty "java.class.path") (re-pattern File/pathSeparator)))
+
+(defn- inside?
+  "Whether canonical path p is directory dir (canonical) or inside it."
+  [^String dir ^String p]
+  (or (= dir p) (string/starts-with? p (str dir File/separator))))
+
+(defn- macro-cache-key
+  "Identifies the Clojure code macro namespaces load: the classpath, the
+  Clojure and Java versions, whether asserts are compiled (:elide-asserts
+  binds *assert*, which Clojure compiles the macro namespaces with), the
+  path, modification time and size of the jars, and the path and content
+  of every Clojure source in the classpath directories (except the output
+  directory, which has copies of jars' sources): a fresh checkout of the
+  same sources (i.e. CI's) has the same key."
+  [output-dir asserts?]
+  (let [output     (.getCanonicalPath (io/file output-dir))
+        md         (java.security.MessageDigest/getInstance "SHA-1")
+        add!       (fn [& xs] (.update md (.getBytes (str (string/join "\t" xs) "\n") "UTF-8")))
+        entry-id   (requiring-resolve 'cljf.main/classpath-entry-id)
+        file-hash  (requiring-resolve 'cljf.main/file-hash)]
+    (add! (clojure-version) (System/getProperty "java.version") (util/clojurescript-version)
+      (str "assert " (boolean asserts?)))
+    (doseq [entry (classpath-entries)
+            :let [f (io/file entry)]]
+      (apply add! (entry-id entry f))
+      ;; a directory inside the output directory has copies only; one
+      ;; containing it (i.e. the project's root) is hashed without them
+      (when (and (.isDirectory f) (not (inside? output (.getCanonicalPath f))))
+        (doseq [^File src (sort (file-seq f))
+                :when (and (.isFile src) (re-find #"\.clj[c]?$" (.getName src))
+                           (not (inside? output (.getCanonicalPath src))))]
+          (add! (.getPath src) (file-hash src)))))
+    (apply str (map #(format "%02x" %) (.digest md)))))
+
+(defn- with-aot-macros
+  "Under :aot-macros, calls f loading Clojure namespaces (the macro
+  namespaces) from classes compiled by an earlier build, or compiling them
+  to classes (*compile-files*) as they load. Clojure loads a namespace's
+  class instead of its source when it's newer. The classes are kept in the
+  per-user cache (macro-classes/, see cljf.main) under a key of all Clojure
+  sources (macro-cache-key), shared by builds into other output directories;
+  any change of them compiles them again. Classes being compiled go to a
+  directory of the build's own, renamed to the key's once the build
+  succeeds."
+  [{:keys [aot-macros output-dir elide-asserts]} f]
+  (if-not aot-macros
+    (f)
+    (let [root   ((requiring-resolve 'cljf.main/cache-dir) "macro-classes")
+          key    (macro-cache-key output-dir (not= true elide-asserts))
+          dir    (io/file root key)
+          done   (io/file dir ".complete")
+          ready? (.exists done)
+          tmp    (when-not ready?
+                   (io/file root (str key ".tmp-" (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime))))
+          thread (Thread/currentThread)
+          loader (.getContextClassLoader thread)
+          dcl    (or (when ready?
+                       ((requiring-resolve 'cljf.main/cache-loader) dir (clojure.lang.RT/baseLoader)))
+                     (doto (clojure.lang.DynamicClassLoader. (clojure.lang.RT/baseLoader))
+                       (.addURL (.toURL (.toURI (or tmp dir))))))]
+      (if ready?
+        ;; used while this process runs (a watch loads more of its classes
+        ;; later), see cljf.main/prune!
+        ((requiring-resolve 'cljf.main/hold!) dir)
+        (.mkdirs tmp))
+      ;; threads started by the build inherit it
+      (.setContextClassLoader thread dcl)
+      (try
+        (let [;; and the loader require uses while one is bound, i.e. when
+              ;; building from a REPL or a script (clojure -i)
+              f   #(binding [*macro-dir* (or tmp dir)]
+                     (if (.isBound clojure.lang.Compiler/LOADER)
+                       (with-bindings {clojure.lang.Compiler/LOADER dcl} (f))
+                       (f)))
+              ret (if ready?
+                    (f)
+                    (binding [*compile-files* true
+                              *compile-path*  (.getPath tmp)]
+                      (f)))]
+          (when tmp
+            ((requiring-resolve 'cljf.main/write-shadowed!) tmp (clojure.lang.RT/baseLoader))
+            (spit (io/file tmp ".complete") key)
+            (try
+              (java.nio.file.Files/move (.toPath tmp) (.toPath dir)
+                (into-array [java.nio.file.StandardCopyOption/ATOMIC_MOVE]))
+              ((requiring-resolve 'cljf.main/hold!) dir)
+              ;; another build stored them meanwhile
+              (catch java.io.IOException _)))
+          ret)
+        (finally
+          (.setContextClassLoader thread loader)
+          ;; a failed build's, or one another build stored meanwhile
+          (when (and tmp (.exists tmp))
+            ((requiring-resolve 'cljf.main/delete-tree!) tmp))
+          ((requiring-resolve 'cljf.main/prune!) root))))))
+
 (defn build
   "Compiles the namespaces in :main (a symbol or a collection of symbols) and
   their dependencies to ES modules in :output-dir. Returns the compiled
@@ -564,41 +984,87 @@
    (build opts (env/default-compiler-env (merge default-opts opts))))
   ([opts compiler-env]
    (let [opts (prepare-opts opts)]
-     (with-bindings (assoc (compiler-bindings opts)
-                      #'*generated-sources* (if (:test-runner opts)
-                                              (generate-test-runner opts)
-                                              *generated-sources*)
-                      #'*api-changed* (atom #{}))
-       (env/with-compiler-env compiler-env
-         (swap! compiler-env assoc :options opts)
-         (let [start  (System/nanoTime)
-               inputs (find-sources (mains opts) opts)]
-           ;; lets the compiler know which namespaces are part of the build
-           ;; before they're analyzed
-           (swap! compiler-env assoc ::namespaces (into #{} (map :ns) inputs))
-           (swap! compiler-env update ::ana/data-readers merge (ana/load-data-readers))
-           (write-build-info opts)
-           ;; cljs.core is analyzed first, the compiler expects its analysis
-           ;; to be available when compiling anything else
-           (compile-ns (first (filter #(= 'cljs.core (:ns %)) inputs)) opts)
-           (let [others (remove #(= 'cljs.core (:ns %)) inputs)]
-             (if (:parallel-build opts)
-               (compile-parallel others opts)
-               (doseq [input others]
-                 (compile-ns input opts))))
-           (check-js-entries compiler-env opts)
-           (write-constants! compiler-env opts)
-           (install-goog-shims opts)
-           (install-goog-libs compiler-env opts)
-           (write-package-json opts)
-           (when (seq (:build-hooks opts))
-             (ensure-analyzed! compiler-env inputs opts)
-             (run-hooks! compiler-env inputs opts))
-           (when (:verbose opts)
-             (util/debug-prn
-               (format "Compiled %d namespaces in %.1fs" (count inputs)
-                 (/ (- (System/nanoTime) start) 1e9))))
-           (map :ns inputs)))))))
+     (with-aot-macros opts #(build* opts compiler-env)))))
+
+(defn- build* [opts compiler-env]
+  (with-bindings (assoc (compiler-bindings opts)
+                   #'*generated-sources* (if (:test-runner opts)
+                                           (generate-test-runner opts)
+                                           *generated-sources*)
+                   #'*api-changed* (atom #{})
+                   ;; the classpath doesn't change during a build
+                   #'util/*ns-source-cache* (java.util.concurrent.ConcurrentHashMap.)
+                   #'ana/*parse-ns-cache* (java.util.concurrent.ConcurrentHashMap.))
+    (env/with-compiler-env compiler-env
+      (swap! compiler-env assoc :options opts)
+      (let [[preload-add! preload] (when (:parallel-build opts)
+                                   (preload-macro-namespaces (previous-macro-order opts)))]
+        (try
+          (let [start  (System/nanoTime)
+                ;; With cljs.core's output from the per-user cache, reading its
+                ;; analysis doesn't depend on the build's other namespaces:
+                ;; under :parallel-build it's read while they're found. A
+                ;; compile of it stays after (see #60: compiling it alongside
+                ;; slows both)
+                core-input (when (and (:parallel-build opts) (:core-cache opts true))
+                             (first (find-sources ['cljs.core] (dissoc opts :parallel-build))))
+                core-early (when (and core-input (instance? File (:source-file core-input))
+                                      (restore-core! core-input opts))
+                             (let [pool (Executors/newSingleThreadExecutor)]
+                               (try
+                                 (.submit pool ^Callable (bound-fn [] (compile-ns core-input opts)))
+                                 (finally
+                                   (.shutdown pool)))))
+                inputs (try
+                         (find-sources (mains opts) opts)
+                         (catch Throwable e
+                           (some-> ^Future core-early (.cancel true))
+                           (throw e)))]
+            ;; lets the compiler know which namespaces are part of the build
+            ;; before they're analyzed
+            (swap! compiler-env assoc ::namespaces (into #{} (map :ns) inputs))
+            (swap! compiler-env update ::ana/data-readers merge (ana/load-data-readers))
+            (write-build-info opts)
+            (let [order (build-macro-order inputs)]
+              (when preload-add!
+                (preload-add! order)
+                (preload-add! nil))
+              (store-macro-order! opts order)
+              ;; cljs.core is analyzed first, the compiler expects its analysis
+              ;; to be available when compiling anything else
+              (if core-early
+                (try
+                  (.get ^Future core-early)
+                  (catch ExecutionException e
+                    (throw (or (.getCause e) e))))
+                (let [core   (first (filter #(= 'cljs.core (:ns %)) inputs))
+                      cache? (and (:core-cache opts true) (instance? File (:source-file core)))]
+                  (when cache? (restore-core! core opts))
+                  (compile-ns core opts)
+                  (when cache? (store-core! core opts))))
+              (let [others (remove #(= 'cljs.core (:ns %)) inputs)]
+                (if (:parallel-build opts)
+                  (compile-parallel others opts)
+                  (doseq [input others]
+                    (compile-ns input opts))))
+              (some-> ^Future preload (.get)))
+            (check-js-entries compiler-env opts)
+            (write-constants! compiler-env opts)
+            (install-goog-shims opts)
+            (install-goog-libs compiler-env opts)
+            (write-package-json opts)
+            (when (seq (:build-hooks opts))
+              (ensure-analyzed! compiler-env inputs opts)
+              (run-hooks! compiler-env inputs opts))
+            (when (:verbose opts)
+              (util/debug-prn
+                (format "Compiled %d namespaces in %.1fs" (count inputs)
+                  (/ (- (System/nanoTime) start) 1e9))))
+            (map :ns inputs))
+          ;; whatever fails before its last namespaces are added, its thread
+          ;; doesn't wait for more (ending it again after is harmless)
+          (finally
+            (when preload-add! (preload-add! nil))))))))
 
 (def ^:private stdout
   "The process' standard output, events go there from any thread, i.e. the
@@ -855,6 +1321,35 @@
       (and (:esm-hmr opts) (not (false? (:esm-repl opts))))
       (assoc :esm-repl true ::repl-mains (atom #{})))))
 
+(defn- reuse-inputs
+  "The build's inputs after files changed, if finding them again would find
+  the same namespaces in the same order: the mains are the same, and every
+  changed file is a Clojure (macro) file, or the source of an input whose
+  ns form still names it and requires the same namespaces. The changed
+  sources' ns infos are parsed again. nil otherwise, i.e. when a file was
+  added, removed or renamed: find-sources finds the inputs then."
+  [inputs prev-mains mains changed]
+  (when (and (seq inputs) (= prev-mains (vec mains)))
+    (let [by-ns (into {} (map (juxt :ns identity)) inputs)
+          fresh (reduce
+                  (fn [m ^File f]
+                    (cond
+                      (not (.exists f)) (reduced nil)
+                      (re-find #"\.clj$" (.getName f)) m
+                      :else
+                      (let [ns-info (parse-ns f)
+                            old     (by-ns (:ns ns-info))]
+                        (if (and old
+                                 (= (.getCanonicalPath f)
+                                    (.getCanonicalPath ^File (:source-file old)))
+                                 (= (set (:requires ns-info)) (set (:requires old))))
+                          (assoc m (:ns ns-info) (assoc ns-info :source-file (:source-file old)))
+                          (reduced nil)))))
+                  {}
+                  changed)]
+      (when fresh
+        (mapv #(or (fresh (:ns %)) %) inputs)))))
+
 (defn watch
   "Builds like build, then recompiles namespaces as their sources change.
   With :watch-events :stdin, the parent process (the Vite plugin) watches
@@ -877,6 +1372,8 @@
         built?       (atom false)
         ;; the build's inputs, for build hooks run by the REPL
         inputs-      (atom [])
+        ;; the mains the inputs were found for
+        inputs-mains- (atom nil)
         ;; the modification times of the source files compiled: a file the
         ;; REPL compiled (load-file) isn't compiled again when the editor's
         ;; save is reported
@@ -899,6 +1396,7 @@
                          (env/with-compiler-env compiler-env
                            (ensure-analyzed! compiler-env inputs opts))
                          (reset! inputs- inputs)
+                         (reset! inputs-mains- (vec (mains opts)))
                          (reset! built? true)
                          (reset! warnings- {})
                          (doto {:type       "compiled"
@@ -917,9 +1415,13 @@
                              gen    (if (:test-runner opts) (generate-test-runner opts) {})
                              runner-changed (when (and runner (not= before (slurp-if-exists runner)))
                                               [(-> opts :test-runner :ns)])
-                             inputs (binding [*generated-sources* gen]
-                                      (env/with-compiler-env compiler-env
-                                        (find-sources (mains opts) opts)))
+                             inputs (or (when-not (:test-runner opts)
+                                          (env/with-compiler-env compiler-env
+                                            (reuse-inputs @inputs- @inputs-mains- (mains opts) changed)))
+                                        (binding [*generated-sources* gen]
+                                          (env/with-compiler-env compiler-env
+                                            (find-sources (mains opts) opts))))
+                             _      (reset! inputs-mains- (vec (mains opts)))
                              _      (swap! compiler-env assoc ::namespaces (into #{} (map :ns) inputs))
                              _      (reset! inputs- inputs)
                              macros (keep #(when (re-find #"\.clj[c]?$" (.getName ^File %)) (file-ns %)) changed)
@@ -972,7 +1474,12 @@
                                  (try
                                    (if-not @built?
                                      (build!)
-                                     (recompile-changes! files nses))
+                                     ;; lookups of sources and their ns forms cached
+                                     ;; for the recompile, not across them: files
+                                     ;; may be added or removed in between
+                                     (binding [util/*ns-source-cache* (java.util.concurrent.ConcurrentHashMap.)
+                                               ana/*parse-ns-cache*  (java.util.concurrent.ConcurrentHashMap.)]
+                                       (recompile-changes! files nses)))
                                    (catch Throwable e
                                      (doto (assoc (error-data e) :type "error")
                                        (->> (event! "error")))))))))))]

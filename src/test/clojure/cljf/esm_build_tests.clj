@@ -8,7 +8,9 @@
 
 (ns cljf.esm-build-tests
   "cljf.esm builds reusing the output of a previous build."
-  (:require [cljs.compiler :as comp]
+  (:require [cljs.analyzer :as ana]
+            [cljs.compiler :as comp]
+            [cljs.env :as env]
             [cljf.esm :as esm]
             [cljs.util :as util]
             [cljs.vendor.clojure.data.json :as json]
@@ -192,6 +194,73 @@
     (testing "the queued emits don't outlive the build, nor leave its output file behind"
       (is (empty? (remove before (filter #(.isAlive ^Thread %) (executor-threads)))))
       (is (not (.exists (io/file dir "out" "test" "bad.js.tmp")))))))
+
+(deftest failed-parallel-builds-compile-the-namespaces-not-requiring-the-failed-one
+  (let [dir     (temp-dir)
+        ms      (- (System/currentTimeMillis) 60000)
+        bad     (write-source! dir 'test.fbad "(ns test.fbad)\n(defn g [x] (let [a] x))" ms)
+        dep     (write-source! dir 'test.fdep "(ns test.fdep (:require [test.fbad]))" ms)
+        dep2    (write-source! dir 'test.fdep2 "(ns test.fdep2 (:require [test.fdep]))" ms)
+        indep   (write-source! dir 'test.findep "(ns test.findep) (defn h [x] x)" ms)
+        ;; requires both the failed namespace and one that compiles: never ready
+        diamond (write-source! dir 'test.fdia "(ns test.fdia (:require [test.fbad] [test.findep]))" ms)
+        main    (write-source! dir 'test.fmain "(ns test.fmain (:require [test.fdep2] [test.findep] [test.fdia]))" ms)
+        err     (deref
+                  (future
+                    (try
+                      (binding [esm/*generated-sources* (into {} [bad dep dep2 indep diamond main])]
+                        (esm/build {:main 'test.fmain :output-dir (str (io/file dir "out")) :parallel-build true}))
+                      ::no-error
+                      (catch Throwable e e)))
+                  60000 ::timeout)]
+    (is (instance? Throwable err) "fails, without waiting forever for the failed namespace's dependents")
+    (is (.exists (io/file dir "out" "test" "findep.js")) "a namespace not requiring the failed one is compiled")
+    (is (not (.exists (io/file dir "out" "test" "fdep2.js"))) "its dependents, transitively, aren't")
+    (is (not (.exists (io/file dir "out" "test" "fdia.js"))) "nor one also requiring a namespace that compiled")))
+
+(deftest ns-first-segments-after-a-removal-and-an-addition
+  ;; a removal and an addition leave the count of namespaces unchanged
+  (let [cenv (env/default-compiler-env)
+        segs @#'comp/ns-first-segments]
+    (swap! cenv update ::ana/namespaces assoc 'aaa.x {} 'bbb.y {})
+    (is (contains? (segs cenv) "aaa"))
+    (ana/remove-namespace! cenv 'aaa.x)
+    (swap! cenv update ::ana/namespaces assoc 'ccc.z {})
+    (is (not (contains? (segs cenv) "aaa")))
+    (is (contains? (segs cenv) "ccc"))))
+
+(deftest compiler-source-root-through-a-symlinked-directory
+  ;; the compiler classes' cache key hashes the sources under this root: a
+  ;; symlink inside the resource path (cljf/ linked to a differently named
+  ;; directory) must not make it a path that isn't the classpath directory
+  (let [dir    (temp-dir)
+        real   (io/file dir "real" "compiler-src")
+        cp     (io/file dir "cp")
+        nofa   (make-array java.nio.file.attribute.FileAttribute 0)
+        thread (Thread/currentThread)
+        before (.getContextClassLoader thread)]
+    (.mkdirs real) (.mkdirs cp)
+    (spit (io/file real "esm.clj") "(ns cljf.esm)")
+    (Files/createSymbolicLink (.toPath (io/file cp "cljf")) (.toPath real) nofa)
+    ;; no parent: only cp, not the compiler's own cljf/esm.clj
+    (.setContextClassLoader thread (URLClassLoader. (into-array URL [(.toURL (.toURI cp))]) nil))
+    (try
+      (let [root (@(requiring-resolve 'cljf.main/source-root) "cljf/esm.clj")]
+        (is (some? root))
+        (is (= (.getCanonicalPath cp) (some-> ^File root .getCanonicalPath)))
+        (is (.isDirectory ^File root)))
+      (finally
+        (.setContextClassLoader thread before)))))
+
+(deftest parse-ns-cache-without-a-compiler-env
+  ;; the watcher looks up changed files' namespaces outside any compiler env,
+  ;; with the per-recompile cache bound
+  (let [dir (temp-dir)
+        [_ f] (write-source! dir 'test.pnc "(ns test.pnc)" (System/currentTimeMillis))]
+    (binding [env/*compiler* nil
+              ana/*parse-ns-cache* (java.util.concurrent.ConcurrentHashMap.)]
+      (is (= 'test.pnc (:ns (ana/parse-ns f))))
+      (is (= 'test.pnc (:ns (ana/parse-ns f))) "and from the cache"))))
 
 (deftest errors-in-macro-namespaces-name-their-file-and-line
   (let [dir    (temp-dir)

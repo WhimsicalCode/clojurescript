@@ -10,7 +10,7 @@ import fs from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { compilerCommand } from '../cljf/launcher.js';
@@ -144,14 +144,70 @@ function resolveFromProject(root, specifier, purpose) {
   throw new Error(`${specifier} not found, can not ${purpose}`);
 }
 
-async function loadFromProject(root, specifier, purpose) {
-  return import(pathToFileURL(resolveFromProject(root, specifier, purpose)).href);
+// The native summarizer (src/main/rust/prune, script/build-native-prune) for
+// this platform, null without one.
+let nativePruneWarned = false;
+
+function loadNativePrune() {
+  const file = new URL(`./native/cljf-prune.${process.platform}-${process.arch}.node`, import.meta.url);
+  if (process.env.CLJF_NATIVE_PRUNE === 'false' || !existsSync(file)) return null;
+  try {
+    return createRequire(import.meta.url)(fileURLToPath(file));
+  } catch (e) {
+    // a binary that's there but doesn't load (i.e. built for another Node.js
+    // ABI) is said once, not mistaken for none
+    if (!nativePruneWarned) {
+      nativePruneWarned = true;
+      console.warn(`[cljf] the native prune summarizer ${fileURLToPath(file)} didn't load, ` +
+        `summarizing in JavaScript instead (same output): ${e.message.split('\n')[0]}`);
+    }
+    return null;
+  }
 }
 
-// Statement summaries of chunks for pruning (prune.js), parsed with oxc's
-// parser (shipped with Rolldown, at oxcPath) in worker threads, the largest
-// chunks first.
+// The native summaries (string table, statements as u32s) as prune.js'.
+function decodeSummary({ strings, statements: a }) {
+  const kinds = ['root', 'decl', 'prop'];
+  const out = [];
+  let i = 0;
+  const list = () => {
+    const n = a[i++];
+    const r = new Array(n);
+    for (let k = 0; k < n; k++) r[k] = strings[a[i++]];
+    return r;
+  };
+  while (i < a.length) {
+    const s = { start: a[i++], end: a[i++], kind: kinds[a[i++]] };
+    const object = a[i++], prop = a[i++];
+    const names = list();
+    if (s.kind === 'prop') {
+      s.object = strings[object];
+      s.prop = prop === 0xFFFFFFFF ? null : strings[prop];
+    }
+    if (s.kind === 'decl') s.names = names;
+    s.ids = list();
+    s.props = list();
+    out.push(s);
+  }
+  return out;
+}
+
+// Statement summaries of chunks for pruning (prune.js): by the native
+// summarizer if there's one for this platform (and it supports the chunk),
+// else parsed with oxc's parser (shipped with Rolldown, at oxcPath) in
+// worker threads, the largest chunks first.
 async function summarizeChunks(oxcPath, chunks) {
+  const native = loadNativePrune();
+  const summaries = native ? native.summarizeChunks(chunks.map(c => c.code)).map(s => s && decodeSummary(s)) : [];
+  const rest = chunks.map((c, i) => i).filter(i => !summaries[i]);
+  if (rest.length) {
+    const results = await summarizeChunksJS(oxcPath, rest.map(i => chunks[i]));
+    rest.forEach((i, k) => (summaries[i] = results[k]));
+  }
+  return summaries;
+}
+
+async function summarizeChunksJS(oxcPath, chunks) {
   const order = chunks.map((c, i) => i).sort((a, b) => chunks[b].code.length - chunks[a].code.length);
   const results = new Array(chunks.length);
   const size = Math.min(chunks.length, os.availableParallelism());
@@ -176,10 +232,116 @@ async function summarizeChunks(oxcPath, chunks) {
   return results;
 }
 
-// Composes source maps of the pruned, minified chunks with the bundler's,
-// which the project depends on: @jridgewell/remapping.
-async function loadRemapping(root) {
-  return (await loadFromProject(root, '@jridgewell/remapping', 'compose source maps')).default;
+// A composed source map, as the bundler's chunks have them: with toString
+// and toUrl.
+class ChunkSourceMap {
+  constructor(map) {
+    Object.assign(this, map);
+  }
+  toString() {
+    return JSON.stringify(this);
+  }
+  toUrl() {
+    return `data:application/json;charset=utf-8;base64,${Buffer.from(this.toString()).toString('base64')}`;
+  }
+}
+
+// Vite's build-import-analysis rewrites dynamic imports' __VITE_PRELOAD__
+// markers in a chunk (and prepends __vite__mapDeps), then composes a source
+// map of that edit with the chunk's: serially, chunk after chunk, a few
+// seconds for large bundles. When the plugin composes every chunk's map again
+// after minifying anyway, Vite rewrites the code without the map, and the
+// minify workers compose the same edit's map (preload-edit-map.js). The
+// edit, from the chunk's code before (code) and after (edited): {prefix,
+// updates: [[start, end, text]]}, or null when the edited code isn't exactly
+// such an edit.
+const PRELOAD_MARKER = '__VITE_PRELOAD__';
+const PRELOAD_REPLACEMENT = /^(?:void 0|\[\]|__vite__mapDeps\(\[[\d,]*\]\))/;
+const MAP_DEPS = /^const __vite__mapDeps=[^\n]*\n/;
+
+function preloadEdit(code, edited) {
+  const prefix = MAP_DEPS.exec(edited)?.[0] ?? '';
+  const updates = [];
+  let at = prefix.length, from = 0;
+  for (let i = code.indexOf(PRELOAD_MARKER); ; i = code.indexOf(PRELOAD_MARKER, from)) {
+    const end = i < 0 ? code.length : i;
+    if (!edited.startsWith(code.slice(from, end), at)) return null;
+    at += end - from;
+    if (i < 0) break;
+    const replacement = PRELOAD_REPLACEMENT.exec(edited.slice(at, at + 4096))?.[0];
+    if (replacement === undefined) return null;
+    updates.push([i, i + PRELOAD_MARKER.length, replacement]);
+    at += replacement.length;
+    from = i + PRELOAD_MARKER.length;
+  }
+  return at === edited.length ? { prefix, updates } : null;
+}
+
+// Wraps Vite's build-import-analysis generateBundle (plugin) to rewrite the
+// chunks' preload markers without composing their source maps; pending maps
+// each edited chunk's file name to {code, edit, map} for generateBundle.
+// Chunks whose edit preloadEdit doesn't recognize are rewritten by Vite again
+// from their original code, with their maps.
+function deferPreloadSourceMaps(plugin, pending) {
+  const hook = plugin.generateBundle;
+  const handler = typeof hook === 'function' ? hook : hook.handler;
+  const deferred = async function (outputOptions, bundle) {
+    // this build's edits only: a watch (or reused plugin instance) builds
+    // again, chunks without hashed names keep their file names
+    pending.clear();
+    const chunks = Object.values(bundle).filter(c => c.type === 'chunk' && c.map && c.code.includes(PRELOAD_MARKER));
+    const before = new Map(chunks.map(c => [c, { code: c.code, map: c.map }]));
+    chunks.forEach(c => (c.map = null));
+    try {
+      await handler.call(this, outputOptions, bundle);
+    } finally {
+      chunks.forEach(c => (c.map = before.get(c).map));
+    }
+    const redo = [];
+    for (const [chunk, { code, map }] of before) {
+      if (chunk.code === code) continue;
+      const edit = preloadEdit(code, chunk.code);
+      if (edit) {
+        pending.set(chunk.fileName, { code, edit, map });
+      } else {
+        chunk.code = code;
+        redo.push(chunk);
+      }
+    }
+    if (redo.length) {
+      // the other chunks' markers are rewritten already
+      await handler.call(this, outputOptions, bundle);
+    }
+  };
+  plugin.generateBundle = typeof hook === 'function' ? deferred : { ...hook, handler: deferred };
+}
+
+// Minifies the pruned chunks (codes) in worker threads (minify-worker.js), the
+// largest first, composing their source maps with the bundler's (maps, JSON
+// or null) with @jridgewell/remapping, which the project depends on, at
+// remappingPath. Returns [{code, map, error}].
+async function minifyChunks(oxcPath, remappingPath, fileNames, codes, maps, edits, options) {
+  const order = codes.map((c, i) => i).sort((a, b) => codes[b].length - codes[a].length);
+  const results = new Array(codes.length);
+  const size = Math.min(codes.length, os.availableParallelism());
+  const workers = Array.from({ length: size }, () => new Worker(new URL('./minify-worker.js', import.meta.url)));
+  try {
+    await Promise.all(workers.map(async worker => {
+      for (let i = order.shift(); i !== undefined; i = order.shift()) {
+        const reply = await new Promise((resolve, reject) => {
+          worker.once('message', resolve);
+          worker.once('error', reject);
+          worker.postMessage({ id: i, oxcPath, remappingPath, fileName: fileNames[i], code: codes[i], map: maps[i], edit: edits[i], options });
+        });
+        worker.removeAllListeners('error');
+        if (reply.fatal) throw new Error(reply.fatal);
+        results[i] = reply;
+      }
+    }));
+  } finally {
+    await Promise.all(workers.map(w => w.terminate()));
+  }
+  return results;
 }
 
 // Whether a dependency pre-bundled by Vite's dev server was CommonJS, from the
@@ -247,6 +409,8 @@ export default module.exports;
 export default function cljf(options) {
   const manifestName = options.manifest ?? 'manifest.json';
   let config, proc, server, minify, root, cwd, outputDir, compiler;
+  // chunks' preload edits whose source maps generateBundle composes
+  const preloadEdits = new Map();
   // the namespaces of the pages' scripts, compiled as main namespaces
   let pageNamespaces = [];
   let compiling = Promise.resolve();
@@ -277,7 +441,8 @@ export default function cljf(options) {
 
   function run(args, onEvent) {
     const [cmd, ...cmdArgs] = compiler;
-    const child = spawn(cmd, [...cmdArgs, '-m', 'cljf.esm', ...args], {
+    // cljf.main: cljf.esm's command line, loading the compiler from cached classes
+    const child = spawn(cmd, [...cmdArgs, '-m', 'cljf.main', ...args], {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -479,6 +644,13 @@ export default function cljf(options) {
 
     configResolved(resolved) {
       config = resolved;
+      // generateBundle composes every chunk's source map after minifying:
+      // Vite's composition of its preload edits moves there, into workers
+      if (config.command === 'build' && options.prune !== false && minify &&
+          (config.build.sourcemap === true || config.build.sourcemap === 'hidden')) {
+        const importAnalysis = config.plugins.find(p => p.name === 'vite:build-import-analysis');
+        if (importAnalysis?.generateBundle) deferPreloadSourceMaps(importAnalysis, preloadEdits);
+      }
     },
 
     // a watch rebuild, started by the compiler writing its output, bundles
@@ -568,33 +740,40 @@ export default function cljf(options) {
       if (options.prune !== false) {
         const start = Date.now();
         const oxcPath = resolveFromProject(config.root, 'rolldown/utils', 'prune and minify');
-        const oxc = await import(pathToFileURL(oxcPath).href);
         const pruned = pruneChunks(chunks.map(c => c.code), await summarizeChunks(oxcPath, chunks));
         const pruneMs = Date.now() - start;
         const renames = propertyRenames(pruned.codes);
-        const minifier = minify ? oxc.minify : null;
-        const remapping = minifier && chunks.some(c => c.map) ? await loadRemapping(config.root) : null;
-        await Promise.all(chunks.map(async (chunk, i) => {
+        const minified = minify && await minifyChunks(
+          oxcPath,
+          chunks.some(c => c.map) ? resolveFromProject(config.root, '@jridgewell/remapping', 'compose source maps') : null,
+          // the file name in the chunk's directory: the source the map's
+          // sources are composed relative to
+          chunks.map(c => path.basename(c.fileName)),
+          pruned.codes,
+          chunks.map(c => c.map ? c.map.toString() : null),
+          chunks.map(c => {
+            const pending = preloadEdits.get(c.fileName);
+            return pending && c.map && { fileName: c.fileName, code: pending.code, ...pending.edit };
+          }),
+          {
+            module: true,
+            compress: true,
+            mangle: true,
+            // the renames apply across chunks, cljs$ properties are the
+            // compiler's, only accessed as properties (or quoted)
+            mangleProps: { include: /^cljs\$/, quoted: true, cache: renames },
+            // licence notices (/*! ... */, @license, @preserve), as other minifiers keep them
+            codegen: { legalComments: 'inline' },
+          });
+        chunks.forEach((chunk, i) => {
           let code = pruned.codes[i];
-          if (minifier) {
-            // the file name in the chunk's directory: the source the map's
-            // sources are composed relative to
-            const result = await minifier(path.basename(chunk.fileName), code, {
-              module: true,
-              compress: true,
-              mangle: true,
-              // the renames apply across chunks, cljs$ properties are the
-              // compiler's, only accessed as properties (or quoted)
-              mangleProps: { include: /^cljs\$/, quoted: true, cache: renames },
-              // licence notices (/*! ... */, @license, @preserve), as other minifiers keep them
-              codegen: { legalComments: 'inline' },
-              sourcemap: Boolean(chunk.map),
-            });
-            if (result.errors?.length) this.warn(`minifying ${chunk.fileName}: ${result.errors[0].message}`);
+          if (minified) {
+            const result = minified[i];
+            // its output may be partial: a build that ships it isn't one
+            if (result.error) this.error(`minifying ${chunk.fileName}: ${result.error}`);
             code = result.code;
             if (chunk.map) {
-              // blanking kept the positions of the bundler's map
-              const map = remapping([result.map, JSON.parse(chunk.map.toString())], () => null);
+              const map = new ChunkSourceMap(result.map);
               const dir = path.join(path.resolve(config.root, config.build.outDir), path.dirname(chunk.fileName));
               map.sources = map.sources.map(source => sourcePath(dir, source));
               chunk.map = map;
@@ -606,7 +785,7 @@ export default function cljf(options) {
             }
           }
           chunk.code = code;
-        }));
+        });
         if (!pruned.removed && await commonJSPackage(config.root)) {
           this.warn('nothing was pruned: package.json has "type": "commonjs", so the bundler treats the project\'s ' +
             '.js files as CommonJS and wraps the ClojureScript they import in initializers. Use "type": "module".');

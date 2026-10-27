@@ -69,7 +69,7 @@ async function main() {
     case 'build':
     case 'watch': {
       const cmd = await compilerCommand({ ...opts, interactive, log });
-      run(cmd.command, [...cmd.args, '-m', 'cljf.esm', command, ...args]);
+      run(cmd.command, [...cmd.args, '-m', 'cljf.main', command, ...args]);
       break;
     }
     case 'classpath': {

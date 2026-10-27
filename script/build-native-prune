@@ -1,0 +1,19 @@
+#!/bin/sh
+
+# Builds the native prune summarizer (src/main/rust/prune, Rust with oxc's
+# parser) for this platform into the Vite plugin's native/ directory, which
+# the plugin loads when present (CLJF_NATIVE_PRUNE=false disables it), and
+# otherwise summarizes chunks in JavaScript workers. Needs cargo.
+
+set -e
+cd "$(dirname "$0")/.."
+cargo build --locked --release --manifest-path src/main/rust/prune/Cargo.toml
+platform=$(node -p 'process.platform + "-" + process.arch')
+case "$(uname -s)" in
+  Darwin) lib=libcljf_prune.dylib ;;
+  MINGW*|MSYS*|CYGWIN*) lib=cljf_prune.dll ;;
+  *) lib=libcljf_prune.so ;;
+esac
+mkdir -p src/main/js/vite-plugin-cljs/native
+cp "src/main/rust/prune/target/release/$lib" "src/main/js/vite-plugin-cljs/native/cljf-prune.$platform.node"
+echo "src/main/js/vite-plugin-cljs/native/cljf-prune.$platform.node"

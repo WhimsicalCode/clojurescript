@@ -140,8 +140,11 @@ Options are EDN maps, `@file.edn` to read them from a file, and `:profile` keywo
 | `:esm-dts false` | don't write `.d.ts` files |
 | `:esm-after-load` / `:esm-before-load` | fns run around hot reloads, like `^:dev/after-load` |
 | `:watch-dirs` | source directories, defaults to the classpath directories without the compiler's own |
+| `:aot-macros true` | macro namespaces (Clojure) load from classes compiled by an earlier build, kept in the per-user cache's `macro-classes/` (see [Launcher](#launcher)) until a Clojure source on the classpath (or a jar) changes, shared by output directories: starting a watch loads them several times faster |
 
 The output directory has one module per namespace (`out/my/app.js`), plus `goog.js` and `goog/*.js` shims, `goog-lib/`, the parts of the Closure Library the build uses (see below), and `cljs-esm.json`, the main namespaces' modules (the bundle's entry points).
+
+`cljs.core`'s output is kept in the per-user cache's `cljs-core/` (see [Launcher](#launcher)) under a key of the compiler, `cljs.core`'s source and the options its output depends on, and copied into an output directory that lacks it: a cold build then reads `cljs.core`'s analysis instead of compiling it. `:core-cache false` disables it.
 
 A build reuses the output of the previous one: a namespace is recompiled when its source changed, and so are the namespaces requiring it when its API (its vars, their arities) changed, which their output may depend on (`:static-fns` arity calls, `cljs.test`'s lists of tests). Macros changed since the previous build aren't detected: remove the output directory after changing a macro library between builds. A running `watch` does detect them, and recompiles the namespaces using them (see [Hot reloading](#hot-reloading)).
 
@@ -248,13 +251,15 @@ npx cljf repl           # a ClojureScript REPL into the dev server's pages, see 
 npx cljf setup-java     # downloads Eclipse Temurin, for machines without Java
 ```
 
-It resolves the project's `deps.edn` (and the user's, as the Clojure CLI does) with tools.deps, adding the compiler (`com.whimsical/clojurific` from Clojars, unless the project lists it itself, e.g. as a git dependency) and replacing every `org.clojure/clojurescript` with `no-clojurescript/`, then runs `clojure.main -m cljf.esm` with the aliases' `:jvm-opts`. Dependencies are downloaded into the local Maven repository (`~/.m2/repository`, or `:mvn/local-repo`), shared with the Clojure CLI. The classpath is cached in the project's `.cljf/cpcache` until a `deps.edn` it was resolved from changes; `--force` resolves it again.
+It resolves the project's `deps.edn` (and the user's, as the Clojure CLI does) with tools.deps, adding the compiler (`com.whimsical/clojurific` from Clojars, unless the project lists it itself, e.g. as a git dependency) and replacing every `org.clojure/clojurescript` with `no-clojurescript/`, then runs `clojure.main -m cljf.main` with the aliases' `:jvm-opts`. Dependencies are downloaded into the local Maven repository (`~/.m2/repository`, or `:mvn/local-repo`), shared with the Clojure CLI. The classpath is cached in the project's `.cljf/cpcache` until a `deps.edn` it was resolved from changes; `--force` resolves it again.
 
 tools.deps can't download itself: the launcher downloads the jars of its locked resolver with their SHA-256 (from Maven Central, or `CLJF_MAVEN_REPO`), then runs the resolver with them. tools.deps' S3 transporter is left out, so `s3://` repositories aren't supported. Git dependencies need `git` on `PATH`.
 
 Java 17 or later comes from `CLJF_JAVA`, `JAVA_HOME`, `PATH`, then the runtimes `cljf setup-java [version]` installed into the per-user cache (`~/Library/Caches/cljf`, `$XDG_CACHE_HOME/cljf`, `%LOCALAPPDATA%\cljf`, or `CLJF_CACHE_DIR`). Without one, the launcher explains how to install it and offers to run `setup-java` in a terminal; `CLJF_INSTALL_JDK=1` runs it without asking. `setup-java` gets Temurin's JRE (the latest LTS by default) from the Adoptium API, checking the archive's SHA-256 against the API's.
 
 Class data sharing (CDS) archives would load Clojure's classes faster, but the JVM doesn't create them while the classpath has non-empty directories, which the compiler's and the project's sources are.
+
+The launcher and the Vite plugin start the compiler with `cljf.main`, `cljf.esm`'s command line, which loads the compiler (and `cljs.core`'s macros) from classes compiled on its first run: loading its Clojure sources is most of a start's time. The classes are kept in the per-user cache's `compiler-classes/` (`CLJF_CACHE_DIR`, see above), under a key of the classpath, the Clojure and Java versions and the compiler's sources, and are deleted after a week unused. `CLJF_COMPILER_CLASSES=false` loads the sources.
 
 ### REPL
 
@@ -463,6 +468,8 @@ Under `:esm-repl` each module registers its namespace object, the setters of all
 ### Production bundles
 
 Bundlers treat `Type.prototype.cljs$core$ISeq$_first$arity$1 = ...` as a side effect, which keeps every protocol implementation of a used type. The Vite plugin removes those of protocol methods never invoked in the bundle (and the code only they reference), across chunks. Chunks are parsed and summarized in worker threads, and removed statements are blanked, which keeps the bundler's source maps valid. oxc then minifies the chunks in parallel, renaming `cljs$...` properties with one mapping for the whole bundle (`mangleProps`). Source maps (`build.sourcemap`) are composed through these steps to the ClojureScript sources, which the compiler's maps embed (`sourcesContent`). On the Whimsical app this pass takes ~5.5s (2.2s pruning).
+
+Minifying and composing the source maps run in worker threads. The statement summaries pruning needs come from a native summarizer when one is built for the platform (`script/build-native-prune`, Rust with oxc's parser, in `src/main/rust/prune`, needs cargo): it parses and summarizes the chunks in parallel without turning their ASTs into JavaScript objects. Without it (or with `CLJF_NATIVE_PRUNE=false`) the chunks are summarized in JavaScript, with the same result.
 
 ## Development
 

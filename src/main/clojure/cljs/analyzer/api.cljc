@@ -203,6 +203,8 @@
    clojure.core/resolve"
   [env sym]
   {:pre [(map? env) (symbol? sym)]}
+  #?(:clj (when-let [ns (namespace sym)]
+            (ana/await-ns (ana/resolve-ns-alias env ns))))
   (try
     (binding [ana/*private-var-access-nowarn* true]
       (ana/resolve-var env sym
@@ -238,6 +240,7 @@
    (find-ns env/*compiler* sym))
   ([state sym]
    {:pre [(symbol? sym)]}
+   #?(:clj (ana/await-ns sym))
    (get-in @state [::ana/namespaces sym])))
 
 (defn the-ns
@@ -280,6 +283,7 @@
    (ns-resolve env/*compiler* ns sym))
   ([state ns sym]
    {:pre [(symbol? ns) (symbol? sym)]}
+   #?(:clj (ana/await-ns ns))
    (get-in @state [::ana/namespaces ns :defs sym])))
 
 (defn remove-ns
@@ -288,7 +292,8 @@
    (remove-ns env/*compiler* ns))
   ([state ns]
    {:pre [(symbol? ns)]}
-   (swap! state update-in [::ana/namespaces] dissoc ns)))
+   #?(:clj  (ana/remove-namespace! state ns)
+      :cljs (swap! state update-in [::ana/namespaces] dissoc ns))))
 
 (defmacro in-cljs-user
   "Binds cljs.analyzer/*cljs-ns* to 'cljs.user and uses the given compilation

@@ -201,6 +201,46 @@
             [] cols)))
       [] lines)))
 
+(def ^:private ^String base64-chars
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+
+(defn- append-vlq!
+  "Appends n base64 VLQ encoded to sb, as base64-vlq/encode-val."
+  [^StringBuilder sb ^long n]
+  (loop [vlq (if (neg? n) (inc (bit-shift-left (- n) 1)) (bit-shift-left n 1))]
+    (let [digit (bit-and vlq 31)
+          vlq   (bit-shift-right (bit-and 0xFFFFFFFF vlq) 5)]
+      (if (pos? vlq)
+        (do (.append sb (.charAt base64-chars (bit-or digit 32)))
+            (recur vlq))
+        (.append sb (.charAt base64-chars digit))))))
+
+(defn- mappings
+  "The mappings string of lines, a seq of vectors of segments: what joining
+  the segments of lines->segs with commas and the lines with semicolons
+  returns, without the intermediate strings and seqs."
+  ^String [lines]
+  (let [sb  (StringBuilder.)
+        rel (long-array 5)]
+    (reduce
+      (fn [first-line? cols]
+        (when-not first-line? (.append sb \;))
+        (aset rel 0 0)
+        (reduce
+          (fn [first-col? seg]
+            (when-not first-col? (.append sb \,))
+            ;; the offsets of the segment's 4 or 5 values from the previous
+            ;; segment's, the name's from the last named segment's
+            (dotimes [i (count seg)]
+              (let [v (long (nth seg i))]
+                (append-vlq! sb (- v (aget rel i)))
+                (aset rel i v)))
+            false)
+          true cols)
+        false)
+      true lines)
+    (.toString sb)))
+
 (defn relativize-path
   "Relativize a path using :source-map-path if provided or the parent directory
    otherwise."
@@ -275,9 +315,7 @@
                                          #(last (string/split % #"/"))))]
                                (map f paths)))
              "lineCount" (:lines opts)
-             "mappings" (->> (lines->segs (concat preamble-lines @lines))
-                             (map #(string/join "," %))
-                             (string/join ";"))
+             "mappings" (mappings (concat preamble-lines @lines))
              "names" (into []
                            (map (set/map-invert @names->idx)
                                 (range (count @names->idx))))}

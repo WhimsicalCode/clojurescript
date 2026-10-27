@@ -115,13 +115,61 @@
       ns
       (subs ns 0 idx))))
 
+#?(:clj
+   (def ^:private ns-first-segments-cache
+     "[compiler-env namespaces first-segments removals], the first segments of
+     the analyzed namespaces of a compiler env: find-ns-starts-with runs for
+     every local munged. Updated as namespaces are added from the ones new
+     since, by one thread at a time: a parallel build adds thousands, each a
+     full recomputation on every thread munging meanwhile otherwise. Valid
+     while no namespace was removed (ana/namespace-removals): a removal and
+     an addition leave the count unchanged."
+     (atom nil)))
+
+#?(:clj
+   (defn- ns-first-segments [cenv]
+     ;; the namespaces read before the removals: namespaces missing one are
+     ;; seen with its first count (see ana/remove-namespace!)
+     (let [nss      (::ana/namespaces @cenv)
+           removals (.get ana/namespace-removals)
+           [e cached segs r] @ns-first-segments-cache]
+       (if (and (identical? e cenv) (== (count cached) (count nss)) (== r removals))
+         segs
+         (locking ns-first-segments-cache
+           (let [;; here the other way round: kept with a count read before
+                 ;; the namespaces, a removal they miss counts again after
+                 removals (.get ana/namespace-removals)
+                 nss      (::ana/namespaces @cenv)
+                 [e cached segs r] @ns-first-segments-cache]
+             (if (and (identical? e cenv) (== (count cached) (count nss)) (== r removals))
+               segs
+               (let [;; the segments of namespaces added since, and how many:
+                     ;; when every cached namespace is still there (none were
+                     ;; removed), the cached segments plus these are all
+                     [added n] (when (identical? e cenv)
+                                 (reduce-kv
+                                   (fn [[segs n :as acc] ns _]
+                                     (if (contains? cached ns)
+                                       acc
+                                       [(conj segs (get-first-ns-segment ns)) (inc n)]))
+                                   [segs 0] nss))
+                     segs (if (and added (== (count cached) (- (count nss) n)))
+                            added
+                            (into #{} (map get-first-ns-segment) (keys nss)))]
+                 (reset! ns-first-segments-cache [cenv nss segs removals])
+                 segs))))))))
+
 (defn ^:dynamic find-ns-starts-with [needle]
-  (reduce-kv
-    (fn [xs ns _]
-      (when (= needle (get-first-ns-segment ns))
-        (reduced needle)))
-    nil
-    (::ana/namespaces @env/*compiler*)))
+  #?(:clj
+     (when (contains? (ns-first-segments env/*compiler*) needle)
+       needle)
+     :cljs
+     (reduce-kv
+       (fn [xs ns _]
+         (when (= needle (get-first-ns-segment ns))
+           (reduced needle)))
+       nil
+       (::ana/namespaces @env/*compiler*))))
 
 ; Helper fn
 (defn shadow-depth [s]
@@ -2847,7 +2895,12 @@
           (:options @env/*compiler*))))
      ([^File src ^File dest opts]
       (ensure
-        (with-core-cljs opts
+        ;; Under ES module output, compiling cljs.core analyzes it first
+        ;; without writing its analysis cache, which the compile writes
+        ;; right after
+        (with-core-cljs (cond-> opts
+                          (and (esm-mode? opts) (= 'cljs.core (:ns (ana/parse-ns src))))
+                          (assoc :cache-analysis false))
           (fn []
             (when (and (or ana/*verbose* (:verbose opts))
                        (not (:compiler-stats opts)))
@@ -2885,7 +2938,9 @@
                      version (util/clojurescript-version)]
                  (and version (not= version version')))
                (and opts
-                    (not (and (io/resource "cljs/core.aot.js") (= 'cljs.core ns)))
+                    ;; ns first: the resource lookup searches the classpath
+                    ;; under its class loader's lock, for every namespace
+                    (not (and (= 'cljs.core ns) (io/resource "cljs/core.aot.js")))
                     (not= (ana/build-affecting-options opts)
                           (ana/build-affecting-options (util/build-options dest))))
                (and opts (:source-map opts)
@@ -2944,7 +2999,7 @@
                     (when (and (get-in nses [ns :defs])
                                (not= 'cljs.core ns)
                                (not= :interactive (:mode opts)))
-                      (swap! env/*compiler* update-in [::ana/namespaces] dissoc ns))
+                      (ana/remove-namespace! env/*compiler* ns))
                     (let [[ret recompiled?] (compile-file* src-file dest-file opts)]
                       (when (and *recompiled*
                                  recompiled?)

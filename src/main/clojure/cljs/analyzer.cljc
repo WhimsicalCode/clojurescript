@@ -644,6 +644,53 @@
    (def load-mutex (Object.)))
 
 #?(:clj
+   (def ^java.util.concurrent.atomic.AtomicLong namespace-removals
+     "Counts removals of namespaces from ::namespaces (twice each, see
+     remove-namespace!): caches of what's derived from the set of namespaces
+     (cljs.compiler's first segments) check it, since a removal and an
+     addition leave the count unchanged."
+     (java.util.concurrent.atomic.AtomicLong.)))
+
+#?(:clj
+   (defn remove-namespace!
+     "Removes namespace ns from compiler state (an atom)'s ::namespaces,
+     counting it in namespace-removals before and after: a reader seeing the
+     namespaces without it sees the first count, one that saw them with it
+     sees the second later."
+     [state ns]
+     (.incrementAndGet namespace-removals)
+     (swap! state update-in [::namespaces] dissoc ns)
+     (.incrementAndGet namespace-removals)))
+
+#?(:clj
+   (def ^:private required-macro-nses
+     "The macro namespaces require-macros-ns required, once their load
+     completed. Not *loaded-libs*: the ns macro adds a namespace to it when
+     its load starts, before its macros are defined."
+     (java.util.concurrent.ConcurrentHashMap/newKeySet)))
+
+#?(:clj
+   (defn- macro-ns-required?
+     "Whether require-macros-ns required macro namespace lib completely."
+     [lib]
+     (.contains ^java.util.Set required-macro-nses lib)))
+
+#?(:clj
+   (defn require-macros-ns
+     "Requires macro namespace nsym (with flag k, :reload or :reload-all, if
+     any) holding load-mutex. Namespaces required already aren't required
+     again: every namespace compiled requires its macro namespaces, which
+     would serialize parallel compiles on the lock."
+     [nsym k]
+     (if k
+       (locking load-mutex
+         (clojure.core/require nsym k))
+       (when-not (macro-ns-required? nsym)
+         (locking load-mutex
+           (clojure.core/require nsym)
+           (.add ^java.util.Set required-macro-nses nsym))))))
+
+#?(:clj
    (defn- load-data-reader-file [mappings ^java.net.URL url]
      (with-open [rdr (readers/input-stream-push-back-reader (.openStream url))]
        (binding [*file* (.getFile url)]
@@ -704,13 +751,17 @@
 
 #?(:clj
    (defn load-core []
+     ;; checked again holding the lock, and marked loaded once loaded: under
+     ;; cljf.esm's :parallel-build another thread (the macro preloader) may
+     ;; be loading them, which this one waits for rather than interning
+     ;; macros not defined yet
      (when (not @-cljs-macros-loaded)
-       (reset! -cljs-macros-loaded true)
-       (if *cljs-macros-is-classpath*
-         (locking load-mutex
-           (load *cljs-macros-path*))
-         (locking load-mutex
-           (load-file *cljs-macros-path*))))
+       (locking load-mutex
+         (when (not @-cljs-macros-loaded)
+           (if *cljs-macros-is-classpath*
+             (load *cljs-macros-path*)
+             (load-file *cljs-macros-path*))
+           (reset! -cljs-macros-loaded true))))
      (intern-macros 'cljs.core)))
 
 #?(:clj
@@ -4644,21 +4695,13 @@ x                          (not (contains? ret :info)))
                (let [k (or (:use-macros reload)
                          (get-in reloads [:use-macros nsym])
                          (and (= nsym name) *reload-macros* :reload))]
-                 (if k
-                   (locking load-mutex
-                     (clojure.core/require nsym k))
-                   (locking load-mutex
-                     (clojure.core/require nsym)))
+                 (require-macros-ns nsym k)
                  (intern-macros nsym k)))
              (doseq [nsym (vals require-macros)]
                (let [k (or (:require-macros reload)
                          (get-in reloads [:require-macros nsym])
                          (and (= nsym name) *reload-macros* :reload))]
-                 (if k
-                   (locking load-mutex
-                     (clojure.core/require nsym k))
-                   (locking load-mutex
-                     (clojure.core/require nsym)))
+                 (require-macros-ns nsym k)
                  (intern-macros nsym k)))
              (-> ast
                (check-use-macros-inferring-missing env)
@@ -4894,6 +4937,34 @@ x                          (not (contains? ret :info)))
          (symbol (str "cljs.user." name (util/content-sha full-name 7)))))))
 
 #?(:clj
+   (def ^:dynamic *parse-ns-cache*
+     "A java.util.concurrent.ConcurrentHashMap caching parse-ns of source files
+     while bound, i.e. for the duration of one cljf.esm build, in which the
+     compiler parses each namespace's ns form several times. Only calls
+     without side effects are cached, by the file's path and modification
+     time. nil, the default, doesn't cache."
+     nil))
+
+#?(:clj
+   (def ^:dynamic *await-ns*
+     "Under cljf.esm's :parallel-build, a fn of a namespace symbol waiting
+     until the namespace is analyzed if it's one the build compiles before
+     the current one: macros reading other namespaces' analysis through
+     cljs.analyzer.api (which they may not require) see what a sequential
+     build would. nil otherwise."
+     nil))
+
+#?(:clj
+   (defn await-ns
+     "Waits for namespace ns (a symbol or string), see *await-ns*."
+     [ns]
+     (when-let [f *await-ns*]
+       (when ns
+         (f (symbol (str ns)))))))
+
+#?(:clj (declare parse-ns*))
+
+#?(:clj
    (defn ^:dynamic parse-ns
      "Helper for parsing only the essential namespace information from a
       ClojureScript source file and returning a cljs.closure/IJavaScript compatible
@@ -4910,6 +4981,30 @@ x                          (not (contains? ret :info)))
           (:options @env/*compiler*))))
      ([src opts] (parse-ns src nil opts))
      ([src dest opts]
+      (let [^java.util.concurrent.ConcurrentHashMap cache *parse-ns-cache*]
+        (if (and cache (instance? File src)
+                 (not (false? (:restore opts)))
+                 (not (:analyze-deps opts)) (not (:load-macros opts)) (not (:macro-infer opts)))
+          (let [^File src src
+                k   [(.getPath src) (.lastModified src) (:macros-ns opts)
+                     ;; the watcher looks up changed files' namespaces outside
+                     ;; any compiler env
+                     (boolean (some-> env/*compiler* deref :options :emit-constants))]
+                ret (or (.get cache k)
+                        (let [ret (parse-ns* src nil opts)]
+                          (.put cache k ret)
+                          ret))]
+            ;; as parse-ns* returns them given dest
+            (cond-> ret
+              dest (assoc :file dest)
+              (and dest (.exists ^File dest))
+              (assoc :lines (with-open [reader (io/reader dest)]
+                              (-> reader line-seq count)))))
+          (parse-ns* src dest opts))))))
+
+#?(:clj
+   (defn- parse-ns*
+     [src dest opts]
       (ensure
         (let [src (if (symbol? src)
                     (util/ns->source src)
@@ -4996,7 +5091,7 @@ x                          (not (contains? ret :info)))
             (not (contains? ijs :ns))
             (merge
               {:ns (gen-user-ns src)
-               :provides [(gen-user-ns src)]})))))))
+               :provides [(gen-user-ns src)]}))))))
 
 #?(:clj
    (defn- cache-analysis-ext
@@ -5112,9 +5207,12 @@ x                          (not (contains? ret :info)))
    (defn- get-spec-vars
      []
      (when-let [spec-ns (find-ns 'cljs.spec.alpha)]
-       (locking load-mutex
+       (if (macro-ns-required? 'cljs.spec.alpha)
          {:registry-ref (ns-resolve spec-ns 'registry-ref)
-          :speced-vars  (ns-resolve spec-ns '_speced_vars)})))
+          :speced-vars  (ns-resolve spec-ns '_speced_vars)}
+         (locking load-mutex
+           {:registry-ref (ns-resolve spec-ns 'registry-ref)
+            :speced-vars  (ns-resolve spec-ns '_speced_vars)}))))
    :cljs
    (let [registry-ref (delay (get (ns-interns* 'cljs.spec.alpha$macros) 'registry-ref))
          ;; Here, we look up the symbol '-speced-vars because ns-interns*
@@ -5150,9 +5248,10 @@ x                          (not (contains? ret :info)))
 (defn register-specs
   "Registers speced vars found in a namespace analysis cache."
   [cached-ns]
+  ;; require-macros-ns skips the lock once cljs.spec.alpha is loaded: a
+  ;; parallel build reads thousands of caches while macro namespaces load
   #?(:clj (try
-            (locking load-mutex
-              (clojure.core/require 'cljs.spec.alpha))
+            (require-macros-ns 'cljs.spec.alpha nil)
             (catch Throwable t)))
   (let [{:keys [registry-ref speced-vars]} (get-spec-vars)]
     (when-let [registry (seq (:cljs.spec/registry-ref cached-ns))]
@@ -5161,6 +5260,66 @@ x                          (not (contains? ret :info)))
     (when-let [vars (seq (:cljs.spec/speced-vars cached-ns))]
       (when speced-vars
         (swap! @speced-vars into vars)))))
+
+#?(:clj
+   (defn- keep-arglists-meta
+     "A var's :arglists with the metadata of its vectors and symbols (i.e.
+     {:pre ...}, ^not-native) as transit's with-meta values, which transit
+     otherwise drops: macros read a var's arglists (sci's copy-var) and must
+     see them the same in a cached analysis as in a fresh one. Source
+     positions alone aren't kept: nothing reads them back."
+     [x]
+     (let [x' (cond
+                (vector? x) (with-meta (mapv keep-arglists-meta x) (meta x))
+                (seq? x)    (with-meta (apply list (map keep-arglists-meta x)) (meta x))
+                :else       x)
+           m  (and (or (vector? x') (symbol? x')) (meta x'))]
+       (if (and m (some #(not (#{:line :column :end-line :end-column :file} %)) (keys m)))
+         ((requiring-resolve 'cljs.vendor.cognitect.transit/->WithMeta) (with-meta x' nil) m)
+         x'))))
+
+#?(:clj
+   (defn- int-positions
+     "m with its source positions as Integers, as the reader makes them:
+     transit reads them back as Longs, and var-meta emits a Long
+     differently, i.e. for (var x) and cljs.core/resolve."
+     [m]
+     (if (map? m)
+       (reduce (fn [m k]
+                 (let [v (get m k)]
+                   (if (instance? Long v) (assoc m k (int v)) m)))
+         m [:line :column :end-line :end-column])
+       m)))
+
+#?(:clj
+   (defn- int-defs-positions
+     "A cached analysis' vars (and their :meta) with Integer source
+     positions, see int-positions."
+     [analysis]
+     (cond-> analysis
+       (:defs analysis)
+       (update :defs
+         (fn [defs]
+           (persistent!
+             (reduce-kv (fn [m k v]
+                          (assoc! m k (cond-> (int-positions v)
+                                        (map? (:meta v)) (update :meta int-positions))))
+               (transient {}) defs)))))))
+
+#?(:clj
+   (defn- keep-defs-arglists-meta [analysis]
+     (cond-> analysis
+       (:defs analysis)
+       (update :defs
+         (fn [defs]
+           (persistent!
+             (reduce-kv (fn [m k v]
+                          (assoc! m k (cond-> v
+                                        (:arglists v) (update :arglists keep-arglists-meta)
+                                        ;; the arglists of the var's metadata, which
+                                        ;; macros read too (sci's copy-var)
+                                        (get-in v [:meta :arglists]) (update-in [:meta :arglists] keep-arglists-meta))))
+               (transient {}) defs)))))))
 
 #?(:clj
    (defn write-analysis-cache
@@ -5176,8 +5335,13 @@ x                          (not (contains? ret :info)))
                    (str ";; Analyzed by ClojureScript " (util/clojurescript-version) "\n"
                      (pr-str analysis)))
           "json" (when-let [{:keys [writer write]} @transit]
-                   (with-open [os (io/output-stream cache-file)]
-                     (write (writer os :json transit-write-opts) analysis)))))
+                   ;; serialized in memory, written in one go: parallel
+                   ;; builds spent most of their system time in these writes
+                   ;; while transit wrote to the file as it serialized
+                   (let [bos (java.io.ByteArrayOutputStream. 65536)]
+                     (write (writer bos :json transit-write-opts) (keep-defs-arglists-meta analysis))
+                     (with-open [os (java.io.FileOutputStream. cache-file)]
+                       (.writeTo bos os))))))
       (when src
         (.setLastModified ^File cache-file (util/last-modified src))))))
 
@@ -5198,7 +5362,7 @@ x                          (not (contains? ret :info)))
                            "edn"  (edn/read-string (slurp cache-file))
                            "json" (let [{:keys [reader read]} @transit]
                                     (with-open [is (io/input-stream cache-file)]
-                                      (read (reader is :json transit-read-opts)))))]
+                                      (int-defs-positions (read (reader is :json transit-read-opts))))))]
         (when (or *verbose* (:verbose opts))
           (util/debug-prn "Reading analysis cache for" (str src)))
         (swap! env/*compiler*
