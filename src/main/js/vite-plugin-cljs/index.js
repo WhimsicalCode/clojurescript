@@ -760,7 +760,8 @@ export default function cljf(options) {
           let code = pruned.codes[i];
           if (minified) {
             const result = minified[i];
-            if (result.error) this.warn(`minifying ${chunk.fileName}: ${result.error}`);
+            // its output may be partial: a build that ships it isn't one
+            if (result.error) this.error(`minifying ${chunk.fileName}: ${result.error}`);
             code = result.code;
             if (chunk.map) {
               const map = new ChunkSourceMap(result.map);
