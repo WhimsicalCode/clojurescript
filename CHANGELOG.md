@@ -7,7 +7,7 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ### Added
 
-- The nREPL server takes middleware from `:repl`'s `:middleware` (`middleware` in the Vite plugin's types) and from nREPL's configuration files (`.nrepl.edn`, `~/.nrepl/nrepl.edn`), e.g. `cider.nrepl/cider-middleware`. Middleware or a configuration file that doesn't load is left out with a warning.
+- The nREPL server takes middleware from `:repl`'s `:middleware` (`middleware` in the Vite plugin's types) and from the project's `.nrepl.edn`, e.g. `cider.nrepl/cider-middleware`. Middleware or a `.nrepl.edn` that doesn't load is left out with a warning.
 - With cider-nrepl (0.61 or later), nREPL sessions switched to ClojureScript complete and look up the build's namespaces and vars, and complete JavaScript properties in the runtime, through clj-suitable.
 - Builds keep `cljs.core`'s output in the per-user cache (`cljs-core/`, keyed by the compiler, `cljs.core`'s source and the options its output depends on) and copy it into output directories that lack it: a cold build reads `cljs.core`'s analysis instead of compiling it, about 1s faster on the Whimsical app. `:core-cache false` disables it.
 - `cljf.main`, `cljf.esm`'s command line loading the compiler from classes compiled on its first run (kept in the per-user cache until the classpath or the compiler's sources change): the launcher and the Vite plugin start the compiler about 0.6s faster.

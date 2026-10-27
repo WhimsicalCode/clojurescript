@@ -28,6 +28,12 @@
   session evaluates Clojure."
   nil)
 
+(defn- cljs-session?
+  "Whether msg's session is switched to ClojureScript (see enter!)."
+  [{:keys [session]}]
+  (and (instance? clojure.lang.IDeref session)
+       (some? (get @session #'*cljs*))))
+
 (defn enter!
   "Switches the nREPL session evaluating it to ClojureScript, see
   cljf.esm.repl/repl."
@@ -88,9 +94,7 @@
   ClojureScript (see enter!) in the runtime."
   [h]
   (fn [{:keys [op session] :as msg}]
-    (if (and (#{"eval" "load-file"} op)
-             (instance? clojure.lang.IDeref session)
-             (get @session #'*cljs*))
+    (if (and (#{"eval" "load-file"} op) (cljs-session? msg))
       ((:exec (meta session)) (:id msg)
        (fn []
          (try
@@ -142,105 +146,177 @@
     (apply println "cljf.esm.repl:" xs)
     (flush)))
 
+(defn- middleware?
+  "Whether v, a var, can be nREPL middleware: it holds a fn."
+  [v]
+  (and (bound? v) (fn? @v)))
+
 (defn- middleware-vars
   "Resolves a middleware name (a symbol or string) to vars as nrepl.cmdline
   does. A var holding a collection of names, such as
   cider.nrepl/cider-middleware, resolves to the middleware it names. A name
-  that doesn't load resolves to no vars, with a warning: Throwable, as
-  loading a namespace compiled for a newer Java throws an Error."
+  that doesn't load, or isn't middleware, resolves to no vars, with a
+  warning: Throwable, as loading a namespace compiled for a newer Java
+  throws an Error."
   [n]
-  (if-let [v (if (var? n)
-               n
-               (try
-                 (or (requiring-resolve (symbol n))
-                     (throw (ex-info "no such var" {})))
-                 (catch Throwable e
-                   (warn "nREPL middleware" n "not loaded:" (.getMessage e))
-                   nil)))]
-    (if (sequential? @v) (mapcat middleware-vars @v) [v])
-    []))
+  (let [v (if (var? n)
+            n
+            (try
+              (or (requiring-resolve (symbol n))
+                  (throw (ex-info "no such var" {})))
+              (catch Throwable e
+                (warn "nREPL middleware" n "not loaded:" (.getMessage e))
+                nil)))]
+    (cond
+      (nil? v)                                  []
+      (and (bound? v) (coll? @v) (not (map? @v))) (mapcat middleware-vars @v)
+      (middleware? v)                           [v]
+      :else (do (warn "nREPL middleware" n "left out: neither a fn nor a collection of middleware names")
+                []))))
+
+(defn- project-config
+  "The project's nREPL configuration, .nrepl.edn, {} without one. One that
+  can't be read is {}, with a warning."
+  []
+  (let [f (io/file ".nrepl.edn")]
+    (if (.exists f)
+      (try
+        (with-open [r (java.io.PushbackReader. (io/reader f))]
+          (or (edn/read r) {}))
+        (catch Throwable e
+          (warn ".nrepl.edn not read:" (.getMessage e))
+          {}))
+      {})))
 
 (defn- configured-middleware
   "Returns the middleware names of :repl's :middleware, followed by those of
-  nREPL's configuration (nrepl.config/config: the project's .nrepl.edn over
-  the user's nrepl.edn), whose other keys don't apply."
+  the project's .nrepl.edn, whose other keys don't apply. The user's
+  nrepl.edn (nrepl.config) isn't read: its middleware is for the user's
+  Clojure projects, the compiler's classpath may not have it."
   [middleware]
-  (let [names  #(map symbol (if (or (symbol? %) (string? %)) [%] %))
-        config (try
-                 (some-> (requiring-resolve 'nrepl.config/config) deref)
-                 (catch Throwable e
-                   (warn "nREPL configuration not read:" (.getMessage e))
-                   nil))]
-    (distinct (concat (names middleware) (names (:middleware config))))))
+  (let [names #(map symbol (if (or (symbol? %) (string? %)) [%] %))]
+    (distinct (concat (names middleware) (names (:middleware (project-config)))))))
 
 (defn cljs-env
   "Returns the build's compiler environment for a message of a session
   switched to ClojureScript, nil for other messages. cider-nrepl's
-  ClojureScript completion and info (clj-suitable) read it. It's a copy:
-  recompiles change the build's under its lock, and some of cider's ops
-  (macroexpand) analyze in theirs, which would change the build's without it."
-  [{:keys [session]}]
-  (when (and (instance? clojure.lang.IDeref session) (get @session #'*cljs*))
-    (some-> (repl/compiler-env) deref atom)))
+  ClojureScript completion and info (clj-suitable) read it. It's a copy of
+  a value no recompile is changing (see cljf.esm.repl/compiler-env-snapshot),
+  which some of cider's ops (macroexpand) change as they analyze."
+  [msg]
+  (when (cljs-session? msg)
+    (some-> (repl/compiler-env-snapshot) atom)))
 
-(defonce ^:private introspection
-  ;; runtime id -> :loaded or :failed: whether suitable.js-introspection was
-  ;; required in the runtime. A reloaded page is a new runtime.
-  (atom {}))
+(defn- suitable-ns
+  "The name of clj-suitable's namespace, suffix after suitable., as
+  cider-nrepl's completion (loaded) has it: one inlining clj-suitable
+  (mranderson) renames its namespaces, the var of its complete-for-nrepl
+  tells how."
+  [suffix]
+  (let [base (or (some-> (resolve 'cider.nrepl.middleware.complete/suitable-complete-for-nrepl)
+                   deref meta :ns ns-name str)
+                 "suitable.complete-for-nrepl")]
+    (symbol (string/replace base #"complete-for-nrepl$" suffix))))
 
 (defn- suitable-eval
-  "Returns a clj-suitable eval fn evaluating in the session's runtime, as
-  suitable's shadow-cljs support does with shadow's cljs-eval."
-  [runtime-id]
+  "Returns a clj-suitable eval fn evaluating in the runtime, as suitable's
+  shadow-cljs support does with shadow's cljs-eval, giving up after
+  timeout ms."
+  [runtime-id timeout]
   (fn [ns code]
-    (let [ns (if (some-> ns repl/cljs-ns?) (symbol ns) 'cljs.user)
-          r  (repl/cljs-eval code {:ns ns :runtime-id runtime-id :timeout 2000})
-          v  (first (:results r))]
-      {:error (or (:error r) (some-> (seq (:warnings r)) pr-str))
-       :value (when (and (string? v) (not (:error r))) (edn/read-string v))})))
+    (try
+      (let [ns (if (some-> ns repl/cljs-ns?) (symbol ns) 'cljs.user)
+            r  (repl/cljs-eval code {:ns ns :runtime-id runtime-id :timeout timeout})
+            v  (first (:results r))]
+        {:error (or (:error r) (some-> (seq (:warnings r)) pr-str))
+         :value (when (and (string? v) (not (:error r))) (edn/read-string v))})
+      (catch Exception e
+        {:error (.getMessage e)}))))
 
-(defn- suitable-require!
-  "Requires suitable.js-introspection in the runtime unless it was already,
-  returns whether it's loaded. A failure is warned about once per runtime."
-  [eval-fn runtime-id]
-  (case (get @introspection runtime-id)
-    :loaded true
-    :failed false
-    (let [{:keys [error]} (eval-fn "cljs.user" "(require 'suitable.js-introspection)")]
-      (swap! introspection assoc runtime-id (if error :failed :loaded))
-      (when error
-        (warn "suitable.js-introspection not loaded in runtime" runtime-id
-          "(no JavaScript property completions in it):" error))
-      (not error))))
+(def ^:private require-timeout
+  ;; ms the first completion in a runtime waits for suitable.js-introspection
+  ;; to load in it, a cold dev server compiles and transforms it
+  30000)
+
+(def ^:private complete-timeout
+  ;; ms a completion waits for the runtime's JavaScript properties: they're
+  ;; left out of the completion after it, the runtime may be paused
+  1000)
+
+(defn- introspection!
+  "Whether suitable.js-introspection is loaded in runtime runtime-id,
+  waiting for it up to complete-timeout ms. Requires it in the background
+  the first time, and again after it failed (warned about once per
+  runtime): a cold dev server can take longer than one completion. The
+  state is the runtime's (cljf.esm.repl/runtime-data), forgotten when it
+  disconnects or the build stops."
+  [runtime-id]
+  (let [loading (repl/update-runtime-data! runtime-id ::introspection
+                  ;; a delay: swap! may call this more than once
+                  #(or % (delay (future
+                                  ((suitable-eval runtime-id require-timeout)
+                                   "cljs.user" (str "(require '" (suitable-ns "js-introspection") ")"))))))
+        result  (some-> loading force (deref complete-timeout ::loading))]
+    (cond
+      (or (nil? result) (= ::loading result)) false
+      (:error result)
+      (do (repl/update-runtime-data! runtime-id ::introspection #(when-not (identical? % loading) %))
+          (when-not (repl/runtime-data runtime-id ::introspection-warned)
+            (repl/update-runtime-data! runtime-id ::introspection-warned (constantly true))
+            (warn (suitable-ns "js-introspection") "not loaded in runtime" runtime-id
+              "(no JavaScript property completions in it until it is):" (:error result)))
+          false)
+      :else true)))
+
+(defonce ^:private suitable-complete
+  ;; clj-suitable's handle-completion-msg!, see load-suitable!
+  (atom nil))
+
+(defn- load-suitable!
+  "Loads cider-nrepl's completion and its clj-suitable, and keeps
+  clj-suitable's handle-completion-msg!. Returns whether it did, warns when
+  it didn't. At startup: cider loads its middleware's namespaces on their
+  first message, and loading one on two threads at once (with a completion
+  asking the runtime) fails."
+  []
+  (try
+    (require 'cider.nrepl.middleware.complete)
+    (let [f (requiring-resolve (symbol (str (suitable-ns "complete-for-nrepl")) "handle-completion-msg!"))]
+      (reset! suitable-complete f)
+      (some? f))
+    (catch Throwable e
+      (warn "clj-suitable not loaded, no JavaScript property completions:" (.getMessage e))
+      false)))
 
 (defn- js-completions
   "Returns clj-suitable's completions of JavaScript properties for a complete
-  message of a session switched to ClojureScript."
+  message of a session switched to ClojureScript, nil while
+  suitable.js-introspection loads in the runtime or when it doesn't answer
+  within complete-timeout ms."
   [{:keys [session prefix symbol] :as msg}]
-  (when-let [complete! (try
-                         (requiring-resolve 'suitable.complete-for-nrepl/handle-completion-msg!)
-                         (catch Throwable _ nil))]
-    (when-let [runtime-id (repl/target-id (select-keys (:opts (get @session #'*cljs*)) [:runtime-id :tag]))]
-      (let [eval-fn (suitable-eval runtime-id)]
-        (when (suitable-require! eval-fn runtime-id)
-          (try
-            (complete! (assoc msg :symbol (str (or prefix symbol)))
-              eval-fn
-              (fn [_]))
-            (catch Exception e
-              (warn "JavaScript completions failed:" (.getMessage e))
-              nil)))))))
+  (try
+    (when-let [complete! @suitable-complete]
+      (when-let [runtime-id (repl/target-id (select-keys (:opts (get @session #'*cljs*)) [:runtime-id :tag]))]
+        (when (introspection! runtime-id)
+          (complete! (assoc msg :symbol (str (or prefix symbol)))
+            (suitable-eval runtime-id complete-timeout)
+            (fn [_])))))
+    (catch Throwable e
+      (warn "JavaScript completions failed:" (.getMessage e))
+      nil)))
 
 (defn- appending-transport
-  "Returns a transport appending candidates to the :completions of the
-  responses sent through it."
+  "Returns a transport appending the candidates (a future) to the
+  :completions of the responses sent through it, waiting for them up to
+  complete-timeout ms."
   [transport candidates]
   (reify t/Transport
     (recv [_] (t/recv transport))
     (recv [_ timeout] (t/recv transport timeout))
     (send [this response]
       (t/send transport (if (contains? response :completions)
-                          (update response :completions #(vec (concat % candidates)))
+                          (update response :completions
+                            #(vec (concat % (deref candidates complete-timeout nil))))
                           response))
       this)))
 
@@ -248,15 +324,14 @@
   "Completes JavaScript properties for CIDER's complete messages asking for
   them (:enhanced-cljs-completion?) in sessions switched to ClojureScript.
   cider-nrepl's own completions of them are clj-suitable's for piggieback and
-  shadow-cljs, which these sessions aren't."
+  shadow-cljs, which these sessions aren't. The runtime is asked while cider
+  completes from the compiler environment."
   [h]
-  (fn [{:keys [op session enhanced-cljs-completion?] :as msg}]
-    (if (and (#{"complete" "cider/complete"} op)
-             (instance? clojure.lang.IDeref session)
-             (get @session #'*cljs*))
+  (fn [{:keys [op enhanced-cljs-completion?] :as msg}]
+    (if (and (#{"complete" "cider/complete"} op) (cljs-session? msg))
       (let [msg (dissoc msg :enhanced-cljs-completion?)]
-        (if-let [candidates (when enhanced-cljs-completion? (seq (js-completions msg)))]
-          (h (update msg :transport appending-transport candidates))
+        (if enhanced-cljs-completion?
+          (h (update msg :transport appending-transport (future (js-completions msg))))
           (h msg)))
       (h msg))))
 
@@ -274,13 +349,14 @@
   (when-let [providers (when (find-ns 'cider.nrepl.middleware.util.cljs)
                          (resolve 'cider.nrepl.middleware.util.cljs/cljs-env-providers))]
     (alter-var-root providers #(if (some #{#'cljs-env} %) % (conj % #'cljs-env)))
-    (when (some #(= 'cider.nrepl/wrap-complete (symbol %)) vars)
+    (when (and (some #(= 'cider.nrepl/wrap-complete (symbol %)) vars)
+               (load-suitable!))
       [#'wrap-cljs-complete])))
 
 (defn- server-middleware
   "Returns [names vars]: the names of the middleware of :repl's :middleware
-  and nREPL's configuration that loaded, and the vars to add to nREPL's
-  default handler for them."
+  and the project's .nrepl.edn (see configured-middleware) that loaded, and
+  the vars to add to nREPL's default handler for them."
   [middleware]
   (let [loaded (keep #(when-let [vs (seq (middleware-vars %))] [% vs])
                  (configured-middleware middleware))
@@ -291,8 +367,8 @@
 (defn start-server!
   "Starts the nREPL server of :repl options, {:nrepl-port 0 (random)
   :nrepl-host \"127.0.0.1\" :port-files [\".nrepl-port\"] :middleware []}.
-  :middleware names middleware added to nREPL's default handler, as do the
-  :middleware of nREPL's configuration files. Its sessions evaluate Clojure
+  :middleware names middleware added to nREPL's default handler, as does
+  the :middleware of the project's .nrepl.edn. Its sessions evaluate Clojure
   in the watcher's JVM, (cljf.esm.repl/repl) switches one to ClojureScript."
   [{:keys [nrepl-port nrepl-host port-files middleware] :or {nrepl-host "127.0.0.1" port-files [".nrepl-port"]}}]
   (let [[names extra] (server-middleware middleware)
