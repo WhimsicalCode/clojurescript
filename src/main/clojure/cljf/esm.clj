@@ -876,6 +876,11 @@
 (defn- classpath-entries []
   (string/split (System/getProperty "java.class.path") (re-pattern File/pathSeparator)))
 
+(defn- inside?
+  "Whether canonical path p is directory dir (canonical) or inside it."
+  [^String dir ^String p]
+  (or (= dir p) (string/starts-with? p (str dir File/separator))))
+
 (defn- macro-cache-key
   "Identifies the Clojure code macro namespaces load: the classpath, the
   Clojure and Java versions, whether asserts are compiled (:elide-asserts
@@ -895,10 +900,12 @@
     (doseq [entry (classpath-entries)
             :let [f (io/file entry)]]
       (apply add! (entry-id entry f))
-      (when (and (.isDirectory f)
-                 (not (string/starts-with? (str output File/separator) (str (.getCanonicalPath f) File/separator))))
+      ;; a directory inside the output directory has copies only; one
+      ;; containing it (i.e. the project's root) is hashed without them
+      (when (and (.isDirectory f) (not (inside? output (.getCanonicalPath f))))
         (doseq [^File src (sort (file-seq f))
-                :when (and (.isFile src) (re-find #"\.clj[c]?$" (.getName src)))]
+                :when (and (.isFile src) (re-find #"\.clj[c]?$" (.getName src))
+                           (not (inside? output (.getCanonicalPath src))))]
           (add! (.getPath src) (file-hash src)))))
     (apply str (map #(format "%02x" %) (.digest md)))))
 
