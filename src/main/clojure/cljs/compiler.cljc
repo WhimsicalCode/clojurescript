@@ -115,13 +115,35 @@
       ns
       (subs ns 0 idx))))
 
+#?(:clj
+   (def ^:private ns-first-segments-cache
+     "[compiler-env namespace-count first-segments], the first segments of the
+     analyzed namespaces of a compiler env, recomputed as namespaces are
+     added: find-ns-starts-with runs for every local munged."
+     (atom nil)))
+
+#?(:clj
+   (defn- ns-first-segments [cenv]
+     (let [nss (::ana/namespaces @cenv)
+           n   (count nss)
+           [e c segs] @ns-first-segments-cache]
+       (if (and (identical? e cenv) (== c n))
+         segs
+         (let [segs (into #{} (map get-first-ns-segment) (keys nss))]
+           (reset! ns-first-segments-cache [cenv n segs])
+           segs)))))
+
 (defn ^:dynamic find-ns-starts-with [needle]
-  (reduce-kv
-    (fn [xs ns _]
-      (when (= needle (get-first-ns-segment ns))
-        (reduced needle)))
-    nil
-    (::ana/namespaces @env/*compiler*)))
+  #?(:clj
+     (when (contains? (ns-first-segments env/*compiler*) needle)
+       needle)
+     :cljs
+     (reduce-kv
+       (fn [xs ns _]
+         (when (= needle (get-first-ns-segment ns))
+           (reduced needle)))
+       nil
+       (::ana/namespaces @env/*compiler*))))
 
 ; Helper fn
 (defn shadow-depth [s]
