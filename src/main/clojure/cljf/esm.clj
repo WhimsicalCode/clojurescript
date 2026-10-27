@@ -393,6 +393,81 @@
       (let [out (slurp dest)]
         (not-every? #(string/includes? out (str "import \"" (comp/esm-ns-path ns %) "\";")) preloads)))))
 
+(def ^:private core-exts
+  "The output files of cljs.core, its compiled module's last: compile-ns
+  checks that one."
+  [".js.map" ".d.ts" ".cljs.cache.json" ".js"])
+
+(defn- core-output ^File [opts ext]
+  (let [js (.getPath (output-file 'cljs.core opts))]
+    (io/file (str (subs js 0 (- (count js) 3)) ext))))
+
+(defn- core-cache-dir
+  "The per-user cache's entry of cljs.core's output compiled with opts:
+  keyed by the compiler (a hash of its sources when run from them),
+  cljs.core's source, and the options its output depends on."
+  ^File [^File source-file opts]
+  (io/file ((requiring-resolve 'cljf.main/cache-dir) "cljs-core")
+    ((requiring-resolve 'cljf.main/sha1-hex)
+     (pr-str [(util/clojurescript-version)
+              (.getCanonicalPath source-file)
+              (.lastModified source-file)
+              (.length source-file)
+              (into (sorted-map)
+                (-> (ana/build-affecting-options opts)
+                    (merge (select-keys opts [:source-map :esm-dts :emit-constants]))
+                    (update :closure-defines #(into (sorted-map) %))))]))))
+
+(defn- json-path
+  "A path as the source map's JSON writes it."
+  [path]
+  (string/replace (json/write-str path) "/" "\\/"))
+
+(defn- restore-core!
+  "When the output directory lacks cljs.core's output (a cold build), copies
+  it from the per-user cache, compiled by an earlier build with the same
+  compiler, cljs.core and options: the build then reads it as its own up to
+  date output (the analysis cache round trips exactly)."
+  [{:keys [source-file]} opts]
+  (let [dir  (core-cache-dir source-file opts)
+        dest (output-file 'cljs.core opts)]
+    (when (and (.exists (io/file dir ".complete")) (not (.exists dest)))
+      (let [old   (slurp (io/file dir "file"))
+            mtime (.lastModified ^File source-file)]
+        ((requiring-resolve 'cljf.main/hold!) dir)
+        (util/mkdirs dest)
+        (doseq [ext core-exts
+                :let [from (io/file dir (str "core" ext))
+                      to   (core-output opts ext)]]
+          (if (= ext ".js.map")
+            ;; the map names its module by absolute path
+            (spit to (string/replace (slurp from) (json-path old) (json-path (comp/url-path dest))))
+            (io/copy from to))
+          ;; as compile-file leaves them
+          (when (#{".js" ".cljs.cache.json"} ext)
+            (.setLastModified to mtime)))))))
+
+(defn- store-core!
+  "Copies cljs.core's output this build compiled to the per-user cache,
+  unless it has it."
+  [{:keys [source-file]} opts]
+  (let [dir (core-cache-dir source-file opts)]
+    (when (and (not (.exists (io/file dir ".complete")))
+               (every? #(.exists (core-output opts %)) core-exts))
+      (let [tmp (io/file (str dir ".tmp-" (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime)))]
+        (try
+          (.mkdirs tmp)
+          (doseq [ext core-exts]
+            (io/copy (core-output opts ext) (io/file tmp (str "core" ext))))
+          (spit (io/file tmp "file") (comp/url-path (output-file 'cljs.core opts)))
+          (spit (io/file tmp ".complete") "")
+          (java.nio.file.Files/move (.toPath tmp) (.toPath dir)
+            (into-array [java.nio.file.StandardCopyOption/ATOMIC_MOVE]))
+          ((requiring-resolve 'cljf.main/prune!) (.getParentFile dir))
+          ;; another build stored it meanwhile, or the cache isn't writable
+          (catch Exception _
+            (doseq [^File f (reverse (file-seq tmp))] (.delete f))))))))
+
 (defn- compile-ns
   "Compiles a namespace if its output isn't up to date, or when a namespace
   it requires was recompiled with a different api. Up to date namespaces
@@ -903,7 +978,11 @@
              (store-macro-order! opts order)
              ;; cljs.core is analyzed first, the compiler expects its analysis
              ;; to be available when compiling anything else
-             (compile-ns (first (filter #(= 'cljs.core (:ns %)) inputs)) opts)
+             (let [core   (first (filter #(= 'cljs.core (:ns %)) inputs))
+                   cache? (and (:core-cache opts true) (instance? File (:source-file core)))]
+               (when cache? (restore-core! core opts))
+               (compile-ns core opts)
+               (when cache? (store-core! core opts)))
              (let [others (remove #(= 'cljs.core (:ns %)) inputs)]
                (if (:parallel-build opts)
                  (compile-parallel others opts)

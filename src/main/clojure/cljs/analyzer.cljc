@@ -5236,6 +5236,66 @@ x                          (not (contains? ret :info)))
         (swap! @speced-vars into vars)))))
 
 #?(:clj
+   (defn- keep-arglists-meta
+     "A var's :arglists with the metadata of its vectors and symbols (i.e.
+     {:pre ...}, ^not-native) as transit's with-meta values, which transit
+     otherwise drops: macros read a var's arglists (sci's copy-var) and must
+     see them the same in a cached analysis as in a fresh one. Source
+     positions alone aren't kept: nothing reads them back."
+     [x]
+     (let [x' (cond
+                (vector? x) (with-meta (mapv keep-arglists-meta x) (meta x))
+                (seq? x)    (with-meta (apply list (map keep-arglists-meta x)) (meta x))
+                :else       x)
+           m  (and (or (vector? x') (symbol? x')) (meta x'))]
+       (if (and m (some #(not (#{:line :column :end-line :end-column :file} %)) (keys m)))
+         ((requiring-resolve 'cljs.vendor.cognitect.transit/->WithMeta) (with-meta x' nil) m)
+         x'))))
+
+#?(:clj
+   (defn- int-positions
+     "m with its source positions as Integers, as the reader makes them:
+     transit reads them back as Longs, and var-meta emits a Long
+     differently, i.e. for (var x) and cljs.core/resolve."
+     [m]
+     (if (map? m)
+       (reduce (fn [m k]
+                 (let [v (get m k)]
+                   (if (instance? Long v) (assoc m k (int v)) m)))
+         m [:line :column :end-line :end-column])
+       m)))
+
+#?(:clj
+   (defn- int-defs-positions
+     "A cached analysis' vars (and their :meta) with Integer source
+     positions, see int-positions."
+     [analysis]
+     (cond-> analysis
+       (:defs analysis)
+       (update :defs
+         (fn [defs]
+           (persistent!
+             (reduce-kv (fn [m k v]
+                          (assoc! m k (cond-> (int-positions v)
+                                        (map? (:meta v)) (update :meta int-positions))))
+               (transient {}) defs)))))))
+
+#?(:clj
+   (defn- keep-defs-arglists-meta [analysis]
+     (cond-> analysis
+       (:defs analysis)
+       (update :defs
+         (fn [defs]
+           (persistent!
+             (reduce-kv (fn [m k v]
+                          (assoc! m k (cond-> v
+                                        (:arglists v) (update :arglists keep-arglists-meta)
+                                        ;; the arglists of the var's metadata, which
+                                        ;; macros read too (sci's copy-var)
+                                        (get-in v [:meta :arglists]) (update-in [:meta :arglists] keep-arglists-meta))))
+               (transient {}) defs)))))))
+
+#?(:clj
    (defn write-analysis-cache
      ([ns cache-file]
        (write-analysis-cache ns cache-file nil))
@@ -5250,7 +5310,7 @@ x                          (not (contains? ret :info)))
                      (pr-str analysis)))
           "json" (when-let [{:keys [writer write]} @transit]
                    (with-open [os (io/output-stream cache-file)]
-                     (write (writer os :json transit-write-opts) analysis)))))
+                     (write (writer os :json transit-write-opts) (keep-defs-arglists-meta analysis))))))
       (when src
         (.setLastModified ^File cache-file (util/last-modified src))))))
 
@@ -5271,7 +5331,7 @@ x                          (not (contains? ret :info)))
                            "edn"  (edn/read-string (slurp cache-file))
                            "json" (let [{:keys [reader read]} @transit]
                                     (with-open [is (io/input-stream cache-file)]
-                                      (read (reader is :json transit-read-opts)))))]
+                                      (int-defs-positions (read (reader is :json transit-read-opts))))))]
         (when (or *verbose* (:verbose opts))
           (util/debug-prn "Reading analysis cache for" (str src)))
         (swap! env/*compiler*
