@@ -229,6 +229,29 @@
     (is (not (contains? (segs cenv) "aaa")))
     (is (contains? (segs cenv) "ccc"))))
 
+(deftest compiler-source-root-through-a-symlinked-directory
+  ;; the compiler classes' cache key hashes the sources under this root: a
+  ;; symlink inside the resource path (cljf/ linked to a differently named
+  ;; directory) must not make it a path that isn't the classpath directory
+  (let [dir    (temp-dir)
+        real   (io/file dir "real" "compiler-src")
+        cp     (io/file dir "cp")
+        nofa   (make-array java.nio.file.attribute.FileAttribute 0)
+        thread (Thread/currentThread)
+        before (.getContextClassLoader thread)]
+    (.mkdirs real) (.mkdirs cp)
+    (spit (io/file real "esm.clj") "(ns cljf.esm)")
+    (Files/createSymbolicLink (.toPath (io/file cp "cljf")) (.toPath real) nofa)
+    ;; no parent: only cp, not the compiler's own cljf/esm.clj
+    (.setContextClassLoader thread (URLClassLoader. (into-array URL [(.toURL (.toURI cp))]) nil))
+    (try
+      (let [root (@(requiring-resolve 'cljf.main/source-root) "cljf/esm.clj")]
+        (is (some? root))
+        (is (= (.getCanonicalPath cp) (some-> ^File root .getCanonicalPath)))
+        (is (.isDirectory ^File root)))
+      (finally
+        (.setContextClassLoader thread before)))))
+
 (deftest parse-ns-cache-without-a-compiler-env
   ;; the watcher looks up changed files' namespaces outside any compiler env,
   ;; with the per-recompile cache bound

@@ -71,8 +71,11 @@
   ^File [path]
   (when-let [^URL url (io/resource path)]
     (case (.getProtocol url)
-      "file" (let [f (.getCanonicalPath (io/file url))]
-               (io/file (subs f 0 (- (count f) (count path) 1))))
+      ;; the path as the classpath has it, not canonical: a symlink inside
+      ;; path (i.e. a linked cljf/ directory) would resolve elsewhere
+      "file" (let [f (.getAbsolutePath (io/file url))]
+               (when (string/ends-with? (string/replace f File/separator "/") path)
+                 (io/file (subs f 0 (- (count f) (count path) 1)))))
       "jar"  (io/file (.toURI (URL. (first (string/split (.getPath url) #"!/")))))
       nil)))
 
@@ -108,8 +111,14 @@
     (doseq [entry (string/split (System/getProperty "java.class.path") (re-pattern File/pathSeparator))]
       (apply add! (classpath-entry-id entry (io/file entry))))
     ;; the compiler's and its macros' sources
-    (doseq [^File root (distinct (keep source-root ["cljf/esm.clj" "cljs/core.cljs"]))]
-      (if (.isDirectory root)
+    (doseq [path  ["cljf/esm.clj" "cljs/core.cljs"]
+            :let  [root (source-root path)]
+            :when (some? (io/resource path))]
+      ;; a key that doesn't cover the compiler's sources would keep stale
+      ;; classes: -main then loads the compiler from its sources
+      (when-not (and root (or (.isDirectory ^File root) (.isFile ^File root)))
+        (throw (ex-info (str "can't tell the classpath root of " path) {:root root})))
+      (if (.isDirectory ^File root)
         (doseq [^File f (sort (file-seq root))
                 :when (and (.isFile f) (re-find #"\.clj[c]?$" (.getName f)))]
           (add! (.getPath f) (file-hash f)))
