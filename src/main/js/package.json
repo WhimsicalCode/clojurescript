@@ -1,6 +1,6 @@
 {
   "name": "clojurific",
-  "version": "0.12.12",
+  "version": "0.12.13",
   "description": "ClojureScript compiled to ES modules, bundled by Vite",
   "license": "EPL-1.0",
   "repository": {
