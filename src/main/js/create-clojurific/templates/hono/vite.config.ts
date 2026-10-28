@@ -12,8 +12,9 @@ export default defineConfig({
       outputDir: 'target/cljs',
       compilerOptions: {
         jsEntries: { server: { exports: { default: "'{{ns}}/app" } } },
-        // the dev server starts an nREPL server, its port in .nrepl-port
-        repl: { nreplPort: 0 },
+        // the dev server starts an nREPL server, its port in .nrepl-port, with
+        // cider-nrepl's middleware: completion and lookup
+        repl: { nreplPort: 0, middleware: ["'cider.nrepl/cider-middleware"] },
       },
       // the dev server runs the backend once compiled, not on its first
       // request: the REPL evaluates in it

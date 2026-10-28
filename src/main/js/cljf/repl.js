@@ -99,6 +99,107 @@ export function complete(code) {
   return depth <= 0;
 }
 
+// The characters that end a symbol or keyword, when reading back from the
+// cursor
+const SYMBOL_END = /[\s,()[\]{}"'`;@^~\\]/;
+
+// The forms of after (the input after the cursor) up to the one closing the
+// depth brackets open before it, with the rest of the symbol at the cursor
+// left out; and the brackets still open after them
+function formRest(after, depth) {
+  let i = 0;
+  while (i < after.length && !SYMBOL_END.test(after[i])) i++;
+  const start = i;
+  for (; i < after.length && depth > 0; i++) {
+    const c = after[i];
+    if (c === ';') {
+      while (i < after.length && after[i] !== '\n') i++;
+    } else if (c === '\\') {
+      i++;
+    } else if (c === '"') {
+      for (i++; i < after.length && after[i] !== '"'; i++) if (after[i] === '\\') i++;
+    } else if ('([{'.includes(c)) {
+      depth++;
+    } else if (')]}'.includes(c)) {
+      depth--;
+    }
+  }
+  return { rest: after.slice(start, i), open: depth };
+}
+
+/**
+ * What Tab completes at the end of code, the input so far up to the cursor,
+ * with after the input after it: {prefix, context}, prefix the symbol or
+ * keyword before the cursor, context the top-level form around it with the
+ * symbol replaced by __prefix__ and its open brackets closed, as compliment
+ * and clj-suitable read it (nil at the top level). null when there's nothing
+ * to complete: no prefix, or in a string, comment or character.
+ */
+export function completionRequest(code, after = '') {
+  const stack = [];
+  let formStart = 0;
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i];
+    if (c === ';') {
+      while (i < code.length && code[i] !== '\n') i++;
+      if (i >= code.length) return null;
+    } else if (c === '\\') {
+      i++;
+    } else if (c === '"') {
+      for (i++; i < code.length && code[i] !== '"'; i++) if (code[i] === '\\') i++;
+      if (i >= code.length) return null;
+    } else if ('([{'.includes(c)) {
+      if (!stack.length) formStart = c === '{' && code[i - 1] === '#' ? i - 1 : i;
+      stack.push(c);
+    } else if (')]}'.includes(c)) {
+      stack.pop();
+    }
+  }
+  let start = code.length;
+  while (start > 0 && !SYMBOL_END.test(code[start - 1])) start--;
+  const prefix = code.slice(start);
+  // nothing typed, or a character (\a, \newline)
+  if (!prefix || code[start - 1] === '\\') return null;
+  if (!stack.length) return { prefix, context: null };
+  const { rest, open } = formRest(after, stack.length);
+  const closers = stack.slice(0, open).map(c => ({ '(': ')', '[': ']', '{': '}' })[c]).reverse().join('');
+  return { prefix, context: `${code.slice(formStart, start)}__prefix__${rest}${closers}` };
+}
+
+/**
+ * The completions of code (the input up to the cursor, after the input after
+ * it) in namespace ns, from
+ * cider-nrepl's complete op: the build's vars and the runtime's JavaScript
+ * properties. Resolves to [candidates, prefix] for readline, no candidates
+ * when the server has no complete op (see ops.complete, set false then) or
+ * doesn't answer within timeout ms.
+ */
+export async function completions(conn, { session, ns, code, after = '', ops = {}, timeout = 2000 }) {
+  const request = completionRequest(code, after);
+  if (!request || ops.complete === false) return [[], request?.prefix ?? ''];
+  const candidates = [];
+  const answered = conn.request({
+    op: 'complete',
+    session,
+    ns,
+    prefix: request.prefix,
+    context: request.context ?? undefined,
+    'enhanced-cljs-completion?': 'true',
+    'sort-order': 'by-name',
+  }, msg => {
+    if (msg.status?.includes('unknown-op')) ops.complete = false;
+    for (const c of msg.completions ?? []) if (c.candidate && !candidates.includes(c.candidate)) candidates.push(c.candidate);
+  }).then(() => true, () => true);
+  let timer;
+  const timedOut = new Promise(resolve => {
+    timer = setTimeout(() => resolve(false), timeout);
+    timer.unref?.();
+  });
+  const done = await Promise.race([answered, timedOut]);
+  clearTimeout(timer);
+  return [done ? candidates : [], request.prefix];
+}
+
 /**
  * An nREPL connection: requests whose responses end with status done. Once the
  * socket closes, pending and later requests reject.
@@ -238,8 +339,22 @@ export async function repl({
     throw new LauncherError('cljf repl: the nREPL server has no ClojureScript REPL (cljf.esm.repl), is it the dev server\'s?');
   }
 
+  let ns = 'cljs.user';
+  let pending = '';
+  // Tab completes the symbol before the cursor, with cider-nrepl's
+  // middleware on the server
+  const ops = {};
+  // readline passes the line up to the cursor
+  const completer = (line, callback) => {
+    completions(conn, { session, ns, code: pending + line, after: rl.line.slice(rl.cursor), ops })
+      .then(result => callback(null, result), () => callback(null, [[], '']));
+  };
+
   const history = terminal ? await readHistory(historyFile) : [];
-  const rl = readline.createInterface({ input, output, terminal, history, historySize: 1000, removeHistoryDuplicates: true });
+  const rl = readline.createInterface({
+    input, output, terminal, history, historySize: 1000, removeHistoryDuplicates: true,
+    completer: terminal ? completer : undefined,
+  });
   if (terminal) {
     rl.on('history', lines => {
       fs.mkdir(path.dirname(historyFile), { recursive: true })
@@ -248,8 +363,6 @@ export async function repl({
     });
   }
 
-  let ns = 'cljs.user';
-  let pending = '';
   let evaluating = null;
   let interrupted = false;
   const prompt = () => {

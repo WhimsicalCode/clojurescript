@@ -1,3 +1,7 @@
 {:paths ["src"]
  :deps {;; the dev server's nREPL server, for npm run repl and editors
-        nrepl/nrepl {:mvn/version "1.8.0"}}}
+        nrepl/nrepl {:mvn/version "1.8.0"}
+        ;; its middleware (vite.config.ts) completing and looking up
+        ;; ClojureScript and the runtime's JavaScript, for npm run repl, CIDER
+        ;; and Calva
+        cider/cider-nrepl {:mvn/version "0.63.1"}}}

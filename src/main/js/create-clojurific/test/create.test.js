@@ -61,9 +61,11 @@ for (const template of TEMPLATES) {
     assert.equal(pkg.name, 'my-app');
     assert.equal(pkg.type, 'module');
     assert.equal(pkg.devDependencies.clojurific, `^${version}`);
-    assert.match(readFileSync(path.join(root, 'deps.edn'), 'utf8'), /nrepl\/nrepl/);
+    const deps = readFileSync(path.join(root, 'deps.edn'), 'utf8');
+    assert.match(deps, /nrepl\/nrepl/);
+    assert.match(deps, /cider\/cider-nrepl/);
     const viteConfig = readFileSync(path.join(root, 'vite.config.ts'), 'utf8');
-    assert.match(viteConfig, /repl: \{ nreplPort: 0 \}/);
+    assert.match(viteConfig, /repl: \{ nreplPort: 0, middleware: \["'cider\.nrepl\/cider-middleware"\] \}/);
     assert.ok(existsSync(path.join(root, '.gitignore')));
     assert.ok(!existsSync(path.join(root, '_gitignore')));
     const source = readFileSync(path.join(root, 'src', 'my_app', 'core.cljs'), 'utf8');
