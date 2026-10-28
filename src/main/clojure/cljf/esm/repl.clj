@@ -755,6 +755,13 @@
   [source file]
   (ana/forms-seq* (if (string? source) (StringReader. source) source) file))
 
+(defn- error-message
+  "The message of exception e, or of its first cause with one: the
+  analyzer's macroexpansion errors have none, their cause has."
+  [^Throwable e]
+  (or (some #(.getMessage ^Throwable %) (take-while some? (iterate #(.getCause ^Throwable %) e)))
+      (str (class e))))
+
 (defn- eval-forms
   "Evaluates the forms of source (a string) from namespace ns, calls
   on-result with each form's result (see eval-form) until one fails.
@@ -781,7 +788,7 @@
                              (eval-form form ana/*cljs-ns* file opts)
                              (catch Exception e
                                {:ns ana/*cljs-ns*
-                                :error (.getMessage e)
+                                :error (error-message e)
                                 :ex-data (some-> (ex-data e) (dissoc :runtimes) not-empty pr-str)}))]
                 (set! ana/*cljs-ns* (:ns result))
                 (on-result result)

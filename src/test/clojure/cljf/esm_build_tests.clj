@@ -345,3 +345,51 @@
                (outstanding {} {:files ["out/a.js"] :warnings [a1 user]} #{"out/a.js"})))
         (is (= [{"out/a.js" [a1]} [a1]]
                (outstanding {"out/a.js" [a1]} {:files [] :warnings []} #{"out/a.js"})))))))
+
+(deftest jsx-literals-call-the-jsx-runtime
+  (let [dir     (temp-dir)
+        ms      (- (System/currentTimeMillis) 60000)
+        runtime (io/file dir "node_modules" "react" "jsx-runtime.js")
+        sources (into {} [(write-source! dir 'test.jsx
+                            "(ns test.jsx (:require [cljf.jsx]))
+                             (defn Item [^js p] #x [:li (.-label p)])
+                             (defn view [{:keys [items extra style n]}]
+                               #jsx [:<>
+                                     [:div#main.a {:class \"b\" :on-click identity :data-x 1
+                                                   :style {:font-size 12 :--gap \"1px\"} :key \"k\"}
+                                      (if (seq items) #x [:ul (for [i items] #x [Item {:label i :key i}])] \"none\")
+                                      n]
+                                     [:p {:& extra :title \"t\" :style style}]])
+                             (js/console.log (js/JSON.stringify
+                               (view {:items [1 2] :n 3 :extra {:tab-index 2 :aria-label \"l\"} :style {:z-index 1}})))"
+                            ms)])]
+    (io/make-parents runtime)
+    (spit runtime "const el = (type, props, key) => ({type: typeof type === 'function' ? type.name : type, key: key ?? null, props});
+                   export const jsx = el, jsxs = el, Fragment = 'Fragment';")
+    (spit (io/file dir "node_modules" "react" "package.json")
+      "{\"name\": \"react\", \"type\": \"module\", \"exports\": {\"./jsx-runtime\": \"./jsx-runtime.js\"}}")
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.jsx :output-dir (str (io/file dir "out"))}))
+    (let [out (output dir 'test.jsx)]
+      (testing "literal props are JavaScript objects, with JavaScript names"
+        (is (string/includes? out "{\"className\": \"a b\", \"onClick\": cljs$core.identity, \"data-x\": (1), \"style\": {\"fontSize\": (12), \"--gap\": \"1px\"}, \"id\": \"main\""))
+        (is (string/includes? out "}, \"k\")")))
+      (testing "only the values the compiler can't see into are converted"
+        (is (string/includes? out "{...cljf$jsx.props(extra), \"title\": \"t\", \"style\": cljf$jsx.style(style)}"))
+        (is (string/includes? out "jsx(test$jsx$Item, {\"label\": i}, i)"))
+        (is (string/includes? out "cljf$jsx.child(n)"))))
+    (let [proc (.start (doto (ProcessBuilder. ["node" (str (io/file dir "out" "test" "jsx.js"))])
+                         (.redirectErrorStream true)))
+          res  (json/read-str (string/trim (slurp (.getInputStream proc))))]
+      (.waitFor proc)
+      (is (= {"type" "Fragment" "key" nil
+              "props" {"children"
+                       [{"type" "div" "key" "k"
+                         "props" {"className" "a b" "data-x" 1 "style" {"fontSize" 12 "--gap" "1px"} "id" "main"
+                                  "children" [{"type" "ul" "key" nil
+                                               "props" {"children" [{"type" "test$jsx$Item" "key" 1 "props" {"label" 1}}
+                                                                    {"type" "test$jsx$Item" "key" 2 "props" {"label" 2}}]}}
+                                              3]}}
+                        {"type" "p" "key" nil
+                         "props" {"tabIndex" 2 "aria-label" "l" "title" "t" "style" {"zIndex" 1}}}]}}
+             res)))))

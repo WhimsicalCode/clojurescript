@@ -52,6 +52,7 @@ npm create clojurific@latest
 
 This scaffolds a Vite project based on one of the following templates:
 * Vanilla
+* [React](https://react.dev/), with [`#x` literals](#jsx-literals)
 * [Reagent](https://reagent-project.github.io/)
 * [UIx](https://uix-cljs.dev/)
 * [Hono](https://hono.dev/) (backend)
@@ -366,6 +367,36 @@ describe(1, 2); // error TS2554: Expected 1 arguments, but got 2.
 ```
 
 `this` is bound once `(super ...)` has called the base class' constructor, which a constructor without a `(super ...)` call does first with its params. The methods and protocol implementations are `extend-type`'s. It isn't specific to `:module-format :esm`.
+
+### JSX literals
+
+`#x` (or `#jsx`, as in [squint](https://github.com/squint-cljs/squint#jsx)) is a React element: hiccup compiled to calls of the JSX runtime (`react/jsx-runtime`), with no hiccup interpreted at runtime:
+
+```clojure
+(ns my.app
+  (:require ["react" :as react]
+            [cljf.jsx]))
+
+(defn Counter [^js props]
+  (let [[n set-n!] (react/useState 0)]
+    #x [:div.counter {:style {:font-size 14}}
+        [:button {:on-click #(set-n! inc)} (.-label props) " " n]
+        (when (pos? n)
+          #x [:ul (for [i (range n)] #x [:li {:key i} i])])]))
+
+(.render root #x [Counter {:label "Clicks"}])
+```
+
+```js
+jsxs("div", {className: "counter", style: {fontSize: 14}, children: [jsxs("button", {onClick: ..., children: [props.label, " ", n]}), ...]})
+```
+
+- A props map literal is a JavaScript object built where the element is, its keys renamed when compiling: `:class` to `className`, `:for` to `htmlFor`, kebab-case camelCased (`:on-click` to `onClick`), `data-*` and `aria-*` and strings as they are. A `:style` map literal is a JavaScript object too, with camelCased CSS names (custom properties as they are). Only the values are evaluated at runtime.
+- Values the compiler can't see into are converted at runtime: `{:& props}` spreads `props` (a map converted once per map and cached, or a JavaScript object), with the map's other props overriding it, and a `:style` that isn't a literal is converted the same way. A `#js` literal, or a value tagged `^js`, isn't converted.
+- Children vectors are elements. Other forms are ClojureScript, whose elements need `#x` again, as in squint: `(for [i xs] #x [:li i])`. Strings, numbers, elements and JavaScript values are children as they are; other values are checked at runtime, sequences (of `for`, `map`) becoming arrays.
+- `:key` is the runtime's key argument, `[:<> ...]` a fragment, `[:div#id.a.b]` sets `id` and `className`, `[Component {...}]` passes the props object to a component, which reads it with `.-` (it's a JavaScript object).
+- The namespace requires `cljf.jsx`, which imports `react/jsx-runtime`: Preact's `preact/compat` and other runtimes with the same API are used through a bundler alias of `react/jsx-runtime`.
+- Source maps point the elements, their props and children to their place in the literal.
 
 ### `^:export`
 

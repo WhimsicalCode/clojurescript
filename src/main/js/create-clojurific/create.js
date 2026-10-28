@@ -12,7 +12,7 @@ export const version = JSON.parse(readFileSync(path.join(packageRoot, 'package.j
 
 export const templatesDir = path.join(packageRoot, 'templates');
 
-export const TEMPLATES = ['vanilla', 'reagent', 'uix', 'hono'];
+export const TEMPLATES = ['vanilla', 'react', 'reagent', 'uix', 'hono'];
 
 export const DEFAULT_PROJECT = 'clojurific-project';
 

@@ -71,6 +71,12 @@ for (const template of TEMPLATES) {
     const source = readFileSync(path.join(root, 'src', 'my_app', 'core.cljs'), 'utf8');
     assert.match(source, /^\(ns my-app\.core\b/);
     assert.match(source, /src\/my_app\/core\.cljs/);
+    if (template === 'react') {
+      assert.ok(pkg.dependencies.react);
+      assert.doesNotMatch(deps, /reagent|uix/);
+      assert.match(source, /\[cljf\.jsx\]/);
+      assert.match(source, /#x \[App\]/);
+    }
     if (template === 'hono') {
       assert.deepEqual(pkg.scripts, { dev: 'vite', build: 'vite build', start: 'node dist/index.js', repl: 'cljf repl' });
       assert.ok(pkg.dependencies.hono);
