@@ -23,7 +23,7 @@ Clojurific is a fork of the [ClojureScript](https://github.com/clojure/clojuresc
 * Browser and backend support
 * Integrated REPL in dev for both browser and backend
 * Doesn't need extern definitions
-* 2x faster build times and hot reload ([Build speed](#build-speed-and-bundle-size))
+* 3.5–5x faster production builds than shadow-cljs (5x with warm caches), dev server starts in seconds and hot reloads in ~90ms ([Build speed](#build-speed-and-bundle-size))
 * About 40% less time on runtime benchmarks ([Runtime](#runtime))
 * Bundle sizes comparable to the classic compiler with advanced optimizations ([Bundle size](#build-speed-and-bundle-size))
 
@@ -416,17 +416,19 @@ Call site dispatch adds code: about 5% more minified and 3% more gzipped JavaScr
 
 ### Build speed and bundle size
 
-Measured on the 400K LOC Whimsical app (Apple Silicon laptop):
+Measured on the 400K LOC Whimsical app (~3,100 namespaces) on an 18-core Apple Silicon laptop, fastest of three runs:
 
 | | shadow-cljs release (Closure advanced) | `:module-format :esm` + Vite 8, `:optimize-constants` |
 |---|---|---|
-| production build | 125s | 55s (compile and bundle) |
+| production build | 62–64s | 11–12s (compile and bundle), 17s with empty per-user caches |
+| dev server, cold start (no output directory) | | 7.3s |
+| dev server, restart with nothing changed | | 2.6s |
+| hot reload | | ~90ms per save |
 | total JS, minified | 25.8 MB | 27.0 MB |
 | total JS, gzip / brotli | 5.93 / 4.72 MB | 6.04 / 4.82 MB |
 | initial page load, gzip / brotli | 4.17 / 3.32 MB | 4.55 / 3.65 MB |
-| incremental compile | | 150-230ms per changed namespace |
 
-We haven't run automated benchmarks of dev build times and hot reload speed, but subjectively they feel more than twice as fast as shadow-cljs's.
+The shadow-cljs build is of three-week-older code (2,693 vs 2,732 source files), so the comparison is approximate. The first build after a compiler or Clojure source change fills the per-user caches (see [Launcher](#launcher)) and is slower. On Linux CI (16 vCPUs) the app compiles in ~26s with empty caches and ~15s with the per-user cache restored.
 
 Hello world: 177 KB / 35 KB gzipped (Closure advanced: 110 KB / 23 KB).
 
@@ -483,7 +485,7 @@ Under `:esm-repl` each module registers its namespace object, the setters of all
 
 ### Production bundles
 
-Bundlers treat `Type.prototype.cljs$core$ISeq$_first$arity$1 = ...` as a side effect, which keeps every protocol implementation of a used type. The Vite plugin removes those of protocol methods never invoked in the bundle (and the code only they reference), across chunks. Chunks are parsed and summarized in worker threads, and removed statements are blanked, which keeps the bundler's source maps valid. oxc then minifies the chunks in parallel, renaming `cljs$...` properties with one mapping for the whole bundle (`mangleProps`). Source maps (`build.sourcemap`) are composed through these steps to the ClojureScript sources, which the compiler's maps embed (`sourcesContent`). On the Whimsical app this pass takes ~5.5s (2.2s pruning).
+Bundlers treat `Type.prototype.cljs$core$ISeq$_first$arity$1 = ...` as a side effect, which keeps every protocol implementation of a used type. The Vite plugin removes those of protocol methods never invoked in the bundle (and the code only they reference), across chunks. Chunks are parsed and summarized in worker threads, and removed statements are blanked, which keeps the bundler's source maps valid. oxc then minifies the chunks in parallel, renaming `cljs$...` properties with one mapping for the whole bundle (`mangleProps`). Source maps (`build.sourcemap`) are composed through these steps to the ClojureScript sources, which the compiler's maps embed (`sourcesContent`). On the Whimsical app bundling takes ~4.8s in all.
 
 Minifying and composing the source maps run in worker threads. The statement summaries pruning needs come from a native summarizer when one is built for the platform (`script/build-native-prune`, Rust with oxc's parser, in `src/main/rust/prune`, needs cargo): it parses and summarizes the chunks in parallel without turning their ASTs into JavaScript objects. Without it (or with `CLJF_NATIVE_PRUNE=false`) the chunks are summarized in JavaScript, with the same result.
 
