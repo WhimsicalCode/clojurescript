@@ -285,11 +285,26 @@
                                                    (if (= [".nrepl.edn"] args) f (apply (var-get #'io/file) args)))]
                              (#'repl.nrepl/project-config)))]
         (is (= {} (read-config)))
+        (testing "empty, without a warning"
+          (let [before (str err)]
+            (spit f "")
+            (is (= {} (read-config)))
+            (spit f "  ; nothing yet\n")
+            (is (= {} (read-config)))
+            (is (= before (str err)))))
         (spit f "{:middleware [cider.nrepl/cider-middleware]}")
         (is (= {:middleware '[cider.nrepl/cider-middleware]} (read-config)))
         (spit f "{:middleware [")
         (is (= {} (read-config)))
         (is (string/includes? (str err) ".nrepl.edn not read"))))
+    (testing ":middleware of an unexpected shape is left out"
+      (doseq [[config expected] [[{:middleware :cider} []]
+                                 [{:middleware {:a 'cljf.esm-repl-tests/wrap-test}} []]
+                                 [{:middleware [1 'cljf.esm-repl-tests/wrap-test]} [#'wrap-test]]]]
+        (let [err (java.io.StringWriter.)]
+          (with-redefs [repl.nrepl/project-config (constantly config)]
+            (is (= expected (second (binding [*err* err] (server-middleware [])))) (pr-str config))
+            (is (string/includes? (str err) "left out") (pr-str config))))))
     (testing "cider's middleware adds JavaScript property completion"
       (with-redefs [repl.nrepl/project-config (constantly {})]
         (let [[_ vars] (server-middleware ['cider.nrepl/cider-middleware])]
@@ -350,6 +365,32 @@
           (is (= #{".-version" ".-versions"}
                  (js {:prefix ".-ver" :ns "cljs.user" :context "(__prefix__ js/process)"})))
           (is (empty? (candidates {:prefix "js/process.ver" :ns "cljs.user"}))))
+        (testing "values printed whole, whatever *print-length* (i.e. set in user.clj)"
+          (let [root *print-length*]
+            (alter-var-root #'*print-length* (constantly 3))
+            (try
+              (is (< 20 (count (js {:prefix "js/process." :ns "cljs.user"}))))
+              (finally
+                (alter-var-root #'*print-length* (constantly root))))))
+        (testing "no property completions while a compile holds the build lock, none compiled after it"
+          (let [lock     (:lock @@#'repl/build)
+                snippets #(deref @#'repl/snippets)
+                held     (promise)
+                release  (promise)
+                compile  (future (.lock ^java.util.concurrent.locks.ReentrantLock lock)
+                                 (deliver held true)
+                                 @release
+                                 (.unlock ^java.util.concurrent.locks.ReentrantLock lock))]
+            @held
+            (let [before (snippets)
+                  start  (System/currentTimeMillis)
+                  cs     (js {:prefix "js/process.ver" :ns "cljs.user"})]
+              (is (empty? cs))
+              (is (< (- (System/currentTimeMillis) start) 1500))
+              (deliver release true)
+              @compile
+              (Thread/sleep 300)
+              (is (= before (snippets))))))
         (testing "a runtime that doesn't answer in time doesn't hold up the compiler environment's completions"
           (let [start (System/currentTimeMillis)
                 ;; the runtime is busy evaluating this for 3s

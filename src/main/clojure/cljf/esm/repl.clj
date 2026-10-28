@@ -37,12 +37,16 @@
             [clojure.string :as string])
   (:import [java.io File StringReader]
            [java.util Base64]
-           [java.util.concurrent TimeUnit]
            [java.util.concurrent.atomic AtomicLong]
            [java.util.concurrent.locks ReentrantLock]))
 
 (defonce ^:private build
   ;; the watcher's build, see cljf.esm/watch
+  (atom nil))
+
+(defonce ^:private env-snapshot
+  ;; [compiler-env value]: the build's compiler environment's value taken
+  ;; last while no compile held the build lock, see compiler-env-snapshot
   (atom nil))
 
 (defonce ^:private runtimes-
@@ -67,6 +71,7 @@
   messages to runtimes, the Vite plugin's by default. Starts an nREPL server
   under :repl {:nrepl-port 0}, see cljf.esm.repl.nrepl."
   [b]
+  (reset! env-snapshot nil)
   (reset! build b)
   (let [{:keys [repl]} (:options b)]
     (when (and (map? repl) (contains? repl :nrepl-port) (:nrepl-port repl))
@@ -81,6 +86,7 @@
   "Forgets the build and its runtimes."
   []
   (reset! build nil)
+  (reset! env-snapshot nil)
   (reset! runtimes- {}))
 
 (defn- fail-pending! [runtime-id message]
@@ -278,19 +284,19 @@
   (when-not (ana/get-namespace ns)
     (swap! env/*compiler* assoc-in [::ana/namespaces ns] {:name ns})))
 
-(defonce ^:private env-snapshot
-  ;; [compiler-env value]: the build's compiler environment's value taken
-  ;; last while no compile held the build lock
-  (atom nil))
+(defn compiling?
+  "Whether a compile (a recompile, or the REPL's) holds the build lock."
+  []
+  (boolean (some-> ^ReentrantLock (:lock @build) .isLocked)))
 
 (defn compiler-env-snapshot
   "Returns a value of the build's compiler environment no compile is
-  changing: the current one when the build lock is free (within 100ms), else
-  the last one taken while it was (the current one before any). nil without a build.
-  Doesn't wait for a recompile, for tools answering from it (cider-nrepl)."
+  changing: the current one when the build lock is free, else the last one
+  taken while it was (the current one before any). nil without a build.
+  Doesn't wait for the lock, for tools answering from it (cider-nrepl)."
   []
   (when-let [{:keys [compiler-env lock]} @build]
-    (if (and lock (.tryLock ^ReentrantLock lock 100 TimeUnit/MILLISECONDS))
+    (if (and lock (.tryLock ^ReentrantLock lock))
       (try
         (let [v @compiler-env]
           (reset! env-snapshot [compiler-env v])
