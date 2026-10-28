@@ -103,9 +103,32 @@ export function complete(code) {
 // cursor
 const SYMBOL_END = /[\s,()[\]{}"'`;@^~\\]/;
 
+// The brackets text leaves open, innermost last, and whether it ends in a
+// string or a comment, which closing brackets wouldn't close
+function openBrackets(text) {
+  const stack = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === ';') {
+      while (i < text.length && text[i] !== '\n') i++;
+      if (i >= text.length) return { stack, unclosable: true };
+    } else if (c === '\\') {
+      i++;
+    } else if (c === '"') {
+      for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === '\\') i++;
+      if (i >= text.length) return { stack, unclosable: true };
+    } else if ('([{'.includes(c)) {
+      stack.push(c);
+    } else if (')]}'.includes(c)) {
+      stack.pop();
+    }
+  }
+  return { stack, unclosable: false };
+}
+
 // The forms of after (the input after the cursor) up to the one closing the
 // depth brackets open before it, with the rest of the symbol at the cursor
-// left out; and the brackets still open after them
+// left out
 function formRest(after, depth) {
   let i = 0;
   while (i < after.length && !SYMBOL_END.test(after[i])) i++;
@@ -124,7 +147,7 @@ function formRest(after, depth) {
       depth--;
     }
   }
-  return { rest: after.slice(start, i), open: depth };
+  return after.slice(start, i);
 }
 
 /**
@@ -161,9 +184,14 @@ export function completionRequest(code, after = '') {
   // nothing typed, or a character (\a, \newline)
   if (!prefix || code[start - 1] === '\\') return null;
   if (!stack.length) return { prefix, context: null };
-  const { rest, open } = formRest(after, stack.length);
-  const closers = stack.slice(0, open).map(c => ({ '(': ')', '[': ']', '{': '}' })[c]).reverse().join('');
-  return { prefix, context: `${code.slice(formStart, start)}__prefix__${rest}${closers}` };
+  // closed: the brackets open before the cursor and those the input after it
+  // opens without closing them. Input after it ending in a string or a
+  // comment can't be closed: no context
+  const form = `${code.slice(formStart, start)}__prefix__${formRest(after, stack.length)}`;
+  const { stack: open, unclosable } = openBrackets(form);
+  if (unclosable) return { prefix, context: null };
+  const closers = open.map(c => ({ '(': ')', '[': ']', '{': '}' })[c]).reverse().join('');
+  return { prefix, context: `${form}${closers}` };
 }
 
 /**
@@ -177,7 +205,7 @@ export function completionRequest(code, after = '') {
 export async function completions(conn, { session, ns, code, after = '', ops = {}, timeout = 2000 }) {
   const request = completionRequest(code, after);
   if (!request || ops.complete === false) return [[], request?.prefix ?? ''];
-  const candidates = [];
+  const candidates = new Set();
   const answered = conn.request({
     op: 'complete',
     session,
@@ -188,7 +216,7 @@ export async function completions(conn, { session, ns, code, after = '', ops = {
     'sort-order': 'by-name',
   }, msg => {
     if (msg.status?.includes('unknown-op')) ops.complete = false;
-    for (const c of msg.completions ?? []) if (c.candidate && !candidates.includes(c.candidate)) candidates.push(c.candidate);
+    for (const c of msg.completions ?? []) if (c.candidate) candidates.add(c.candidate);
   }).then(() => true, () => true);
   let timer;
   const timedOut = new Promise(resolve => {
@@ -197,7 +225,7 @@ export async function completions(conn, { session, ns, code, after = '', ops = {
   });
   const done = await Promise.race([answered, timedOut]);
   clearTimeout(timer);
-  return [done ? candidates : [], request.prefix];
+  return [done ? [...candidates] : [], request.prefix];
 }
 
 /**

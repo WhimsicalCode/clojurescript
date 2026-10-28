@@ -260,6 +260,14 @@
   "A var holding neither middleware nor names."
   42)
 
+(def cyclic-middleware
+  "A var holding middleware names, its own among them."
+  '[cljf.esm-repl-tests/cyclic-middleware cljf.esm-repl-tests/other-cyclic-middleware])
+
+(def other-cyclic-middleware
+  "A var holding middleware names naming cyclic-middleware."
+  '[cljf.esm-repl-tests/cyclic-middleware cljf.esm-repl-tests/wrap-test])
+
 (deftest resolves-nrepl-middleware
   (let [server-middleware #'repl.nrepl/server-middleware
         err (java.io.StringWriter.)]
@@ -305,6 +313,9 @@
           (with-redefs [repl.nrepl/project-config (constantly config)]
             (is (= expected (second (binding [*err* err] (server-middleware [])))) (pr-str config))
             (is (string/includes? (str err) "left out") (pr-str config))))))
+    (testing "collections naming themselves, directly or through others"
+      (with-redefs [repl.nrepl/project-config (constantly {})]
+        (is (= [#'wrap-test] (second (server-middleware ['cljf.esm-repl-tests/cyclic-middleware]))))))
     (testing "cider's middleware adds JavaScript property completion"
       (with-redefs [repl.nrepl/project-config (constantly {})]
         (let [[_ vars] (server-middleware ['cider.nrepl/cider-middleware])]
@@ -391,6 +402,25 @@
               @compile
               (Thread/sleep 300)
               (is (= before (snippets))))))
+        (testing "a completion's evaluation doesn't wait for a compile that started after it, past its deadline"
+          (let [lock     ^java.util.concurrent.locks.ReentrantLock (:lock @@#'repl/build)
+                snippets #(deref @#'repl/snippets)
+                held     (promise)
+                release  (promise)
+                compile  (future (.lock lock) (deliver held true) @release (.unlock lock))]
+            @held
+            (let [before (snippets)
+                  start  (System/currentTimeMillis)
+                  ;; as a completion's evaluation that passed its compiling?
+                  ;; check before the compile took the lock
+                  r      (binding [repl/*deadline* (+ start 300)]
+                           (repl/cljs-eval "(+ 1 2)"))]
+              (is (= "Timed out waiting for a compile" (:error r)))
+              (is (< (- (System/currentTimeMillis) start) 1500))
+              (deliver release true)
+              @compile
+              (Thread/sleep 300)
+              (is (= before (snippets)) "nothing compiled after the compile"))))
         (testing "a runtime that doesn't answer in time doesn't hold up the compiler environment's completions"
           (let [start (System/currentTimeMillis)
                 ;; the runtime is busy evaluating this for 3s
@@ -401,17 +431,29 @@
             (is (< (- (System/currentTimeMillis) start) 2500))
             @busy))
         (testing "the runtime's introspection state is forgotten when it disconnects"
-          (is (some? (repl/runtime-data 1 ::repl.nrepl/introspection)))
+          (is (some? (#'repl/runtime-data 1 ::repl.nrepl/introspection)))
           (repl/handle-message! (json/write-str {:op "hello" :runtime 7 :url "other"}))
           (repl/update-runtime-data! 7 ::repl.nrepl/introspection (constantly :x))
           (repl/handle-message! (json/write-str {:op "bye" :runtime 7}))
           (repl/handle-message! (json/write-str {:op "hello" :runtime 7 :url "other"}))
-          (is (nil? (repl/runtime-data 7 ::repl.nrepl/introspection)))
+          (is (nil? (#'repl/runtime-data 7 ::repl.nrepl/introspection)))
           (repl/handle-message! (json/write-str {:op "bye" :runtime 7})))
         (testing "info"
           (let [{:keys [name ns file]} (send {:op "info" :sym "call-g" :ns "esm-repl.app"})]
             (is (= ["call-g" "esm-repl.app"] [name ns]))
             (is (string/ends-with? file "esm_repl/app.cljs"))))
+        (testing "during a compile, the compiler environment the last compile left"
+          (repl/cljs-eval "(def snapshot-test 1)")
+          (let [lock    ^java.util.concurrent.locks.ReentrantLock (:lock @@#'repl/build)
+                held    (promise)
+                release (promise)
+                compile (future (.lock lock) (deliver held true) @release (.unlock lock))]
+            @held
+            (try
+              (is (some? (get-in (repl/compiler-env-snapshot) [:cljs.analyzer/namespaces 'cljs.user :defs 'snapshot-test])))
+              (finally
+                (deliver release true)
+                @compile))))
         (testing "macroexpansion, in a copy of the compiler environment"
           (let [before (repl/compiler-env-snapshot)]
             (is (= "(if 1 (do 2))" (:expansion (send {:op "macroexpand" :code "(when 1 2)" :ns "esm-repl.app"}))))

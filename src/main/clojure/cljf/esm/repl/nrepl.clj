@@ -12,6 +12,7 @@
   (cljf.esm.repl/repl) switched. Needs nREPL on the classpath, the compiler
   doesn't depend on it."
   (:require [cljf.esm.repl :as repl]
+            [cljs.analyzer :as ana]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as string]
@@ -157,8 +158,10 @@
   cider.nrepl/cider-middleware, resolves to the middleware it names. A name
   that doesn't load, or isn't middleware, resolves to no vars, with a
   warning: Throwable, as loading a namespace compiled for a newer Java
-  throws an Error."
-  [n]
+  throws an Error. A collection naming itself, directly or through others,
+  resolves to the middleware it names once."
+  ([n] (middleware-vars n (volatile! #{})))
+  ([n seen]
   (let [v (if (var? n)
             n
             (try
@@ -168,11 +171,13 @@
                 (warn "nREPL middleware" n "not loaded:" (.getMessage e))
                 nil)))]
     (cond
-      (nil? v)                                  []
-      (and (bound? v) (coll? @v) (not (map? @v))) (mapcat middleware-vars @v)
-      (middleware? v)                           [v]
+      (nil? v)                                    []
+      (@seen v)                                   []
+      (and (bound? v) (coll? @v) (not (map? @v))) (do (vswap! seen conj v)
+                                                      (doall (mapcat #(middleware-vars % seen) @v)))
+      (middleware? v)                             [v]
       :else (do (warn "nREPL middleware" n "left out: neither a fn nor a collection of middleware names")
-                []))))
+                [])))))
 
 (defn- project-config
   "The project's nREPL configuration, .nrepl.edn, {} without one. One that
@@ -226,7 +231,8 @@
   EDN. It doesn't compile forms after the deadline, nor while a compile
   holds the build lock unless wait-for-compiles?: a completion answered
   without them (see appending-transport) would still compile them after the
-  compile and run them in the runtime."
+  compile and run them in the runtime. Past the deadline, neither waiting for
+  a compile that started since nor the runtime (cljf.esm.repl/*deadline*)."
   [runtime-id deadline wait-for-compiles?]
   (fn [ns code]
     (try
@@ -240,8 +246,9 @@
 
           :else
           (let [ns (if (some-> ns repl/cljs-ns?) (symbol ns) 'cljs.user)
-                r  (repl/cljs-eval code {:ns ns :runtime-id runtime-id :timeout left
-                                         :print-length nil :print-level nil})
+                r  (binding [repl/*deadline* (when-not wait-for-compiles? deadline)]
+                     (repl/cljs-eval code {:ns ns :runtime-id runtime-id :timeout left
+                                           :print-length nil :print-level nil}))
                 v  (first (:results r))]
             {:error (or (:error r) (some-> (seq (:warnings r)) pr-str))
              :value (when (and (string? v) (not (:error r))) (edn/read-string v))})))
@@ -272,7 +279,7 @@
   time (a cold dev server can take longer than one completion), and again
   retry-after ms after it failed. A failure is warned about unless it's the
   one warned about last, since it last loaded. The state is the runtime's
-  (cljf.esm.repl/runtime-data), {:loading :failed-at :warned}, forgotten
+  (cljf.esm.repl/update-runtime-data!), {:loading :failed-at :warned}, forgotten
   when it disconnects or the build stops."
   [runtime-id deadline]
   (let [now     (System/currentTimeMillis)
@@ -429,7 +436,9 @@
   the :middleware of the project's .nrepl.edn. Its sessions evaluate Clojure
   in the watcher's JVM, (cljf.esm.repl/repl) switches one to ClojureScript."
   [{:keys [nrepl-port nrepl-host port-files middleware] :or {nrepl-host "127.0.0.1" port-files [".nrepl-port"]}}]
-  (let [[names extra] (server-middleware middleware)
+  (let [;; loads Clojure namespaces holding the analyzer's lock, under which
+        ;; the watcher's recompiles load macro namespaces on its thread
+        [names extra] (locking ana/load-mutex (server-middleware middleware))
         server (server/start-server
                  :bind nrepl-host
                  :port (if (true? nrepl-port) 0 nrepl-port)

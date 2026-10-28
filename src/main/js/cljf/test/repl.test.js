@@ -54,6 +54,12 @@ test('completionRequest', () => {
   assert.deepEqual(completionRequest('(let [w js/window] (.-in', ' w) (f "a)")) (next form)'),
     { prefix: '.-in', context: '(let [w js/window] (__prefix__ w) (f "a)"))' });
   assert.deepEqual(completionRequest('(-> el (.-par', ' ; a comment )\n'), { prefix: '.-par', context: '(-> el (__prefix__ ; a comment )\n))' });
+  // brackets the input after the cursor opens are closed too
+  assert.deepEqual(completionRequest('(.-inn', ' (foo'), { prefix: '.-inn', context: '(__prefix__ (foo))' });
+  assert.deepEqual(completionRequest('(f [.-x', ' {:a (g'), { prefix: '.-x', context: '(f [__prefix__ {:a (g)}])' });
+  // which can't be closed in a string or a comment: no context
+  assert.deepEqual(completionRequest('(.-inn', ' "abc'), { prefix: '.-inn', context: null });
+  assert.deepEqual(completionRequest('(.-inn', ' ; open ('), { prefix: '.-inn', context: null });
   // nothing to complete
   for (const code of ['', '(foo ', '(str "ab', '(foo ; comm', '\\a', '(str \\newl']) {
     assert.equal(completionRequest(code), null, code);
@@ -116,6 +122,19 @@ test('completions asks cider-nrepl\'s complete op, with the context for JavaScri
     // nothing to complete, nothing asked
     assert.deepEqual(await completions(conn, { session: 's1', ns: 'my.app', code: '(str "ab' }), [[], '']);
     assert.equal(server.requests.filter(r => r.op === 'complete').length, 3);
+  } finally {
+    conn.close();
+    server.close();
+  }
+});
+
+test('completions keep the first of duplicate candidates, in order', async () => {
+  const server = await fakeServer(() => [], msg => msg.op === 'complete'
+    ? [{ completions: ['ab', 'ac', 'ab', 'ad', 'ac'].map(candidate => ({ candidate })), status: ['done'] }]
+    : null);
+  const conn = await connection(server);
+  try {
+    assert.deepEqual(await completions(conn, { session: 's1', ns: 'cljs.user', code: 'a' }), [['ab', 'ac', 'ad'], 'a']);
   } finally {
     conn.close();
     server.close();
