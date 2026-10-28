@@ -37,6 +37,7 @@
             [clojure.string :as string])
   (:import [java.io File StringReader]
            [java.util Base64]
+           [java.util.concurrent TimeUnit]
            [java.util.concurrent.atomic AtomicLong]
            [java.util.concurrent.locks ReentrantLock]))
 
@@ -45,8 +46,9 @@
   (atom nil))
 
 (defonce ^:private env-snapshot
-  ;; [compiler-env value]: the build's compiler environment's value taken
-  ;; last while no compile held the build lock, see compiler-env-snapshot
+  ;; [compiler-env value]: the build's compiler environment's value when a
+  ;; compile last released the build lock (see compiled!), the same value as
+  ;; the environment's (sharing its structure) while none holds it
   (atom nil))
 
 (defonce ^:private runtimes-
@@ -71,7 +73,7 @@
   messages to runtimes, the Vite plugin's by default. Starts an nREPL server
   under :repl {:nrepl-port 0}, see cljf.esm.repl.nrepl."
   [b]
-  (reset! env-snapshot nil)
+  (reset! env-snapshot (some-> (:compiler-env b) (#(vector % @%))))
   (reset! build b)
   (let [{:keys [repl]} (:options b)]
     (when (and (map? repl) (contains? repl :nrepl-port) (:nrepl-port repl))
@@ -177,7 +179,7 @@
   [opts]
   (:runtime-id (target-or-nil opts)))
 
-(defn runtime-data
+(defn- runtime-data
   "Returns the data kept under k for runtime runtime-id (see
   update-runtime-data!), forgotten when it disconnects or the build stops."
   [runtime-id k]
@@ -239,12 +241,38 @@
   (or @build
       (throw (ex-info "No build, the REPL runs in the JVM of cljf.esm/watch with :esm-repl" {}))))
 
+(def ^:dynamic *deadline*
+  "When bound, the time (System/currentTimeMillis) evaluations give up at:
+  they don't wait for the build lock past it, nor for the runtime. For tools
+  asking the runtime on a user's behalf (completions), whose answer is no
+  use after it."
+  nil)
+
+(defn- time-left
+  "ms until *deadline*, nil without one."
+  []
+  (some-> *deadline* (- (System/currentTimeMillis)) (max 0)))
+
+(defn compiled!
+  "Called holding the build lock once a compile changed the build's compiler
+  environment (the watcher's, or the REPL's analysis): keeps its value for
+  compiler-env-snapshot while the next compile changes it."
+  []
+  (when-let [{:keys [compiler-env]} @build]
+    (reset! env-snapshot [compiler-env @compiler-env])))
+
 (defn- locking* [^ReentrantLock lock f]
-  (.lock lock)
+  (if-let [left (time-left)]
+    (when-not (.tryLock lock left TimeUnit/MILLISECONDS)
+      (throw (ex-info "Timed out waiting for a compile" {})))
+    (.lock lock))
   (try
     (f)
     (finally
-      (.unlock lock))))
+      (try
+        (compiled!)
+        (finally
+          (.unlock lock))))))
 
 (defn- with-build
   "Calls f with the build's compiler environment and compiler bindings,
@@ -291,20 +319,15 @@
 
 (defn compiler-env-snapshot
   "Returns a value of the build's compiler environment no compile is
-  changing: the current one when the build lock is free, else the last one
-  taken while it was (the current one before any). nil without a build.
-  Doesn't wait for the lock, for tools answering from it (cider-nrepl)."
+  changing: the current one when the build lock is free, else the one the
+  last compile left (see compiled!). nil without a build. Doesn't wait for
+  the lock, for tools answering from it (cider-nrepl)."
   []
-  (when-let [{:keys [compiler-env lock]} @build]
-    (if (and lock (.tryLock ^ReentrantLock lock))
-      (try
-        (let [v @compiler-env]
-          (reset! env-snapshot [compiler-env v])
-          v)
-        (finally
-          (.unlock ^ReentrantLock lock)))
+  (when-let [{:keys [compiler-env ^ReentrantLock lock]} @build]
+    (if (and lock (.isLocked lock))
       (let [[cenv v] @env-snapshot]
-        (if (identical? cenv compiler-env) v @compiler-env)))))
+        (if (identical? cenv compiler-env) v @compiler-env))
+      @compiler-env)))
 
 (defn cljs-ns?
   "Whether ns is a ClojureScript namespace of the build or the REPL."
@@ -657,8 +680,8 @@
                          match))))
            (string/join "\n")))))
 
-(defn- eval-js
-  "Evaluates a compiled form in the runtime."
+(defn- eval-js*
+  "Evaluates a compiled form in the runtime, waiting up to :timeout ms."
   [{:keys [js refs] :as compiled} ns runtime {:keys [timeout print-length print-level repl source file] :as opts}]
   (let [n       (swap! snippets inc)
         js-file (str "cljs-repl/" ns "-" n ".js")
@@ -676,7 +699,15 @@
        :keep        (:keep opts)
        :printLength (if (contains? opts :print-length) print-length *print-length*)
        :printLevel  (if (contains? opts :print-level) print-level *print-level*)}
-      (or timeout 30000))))
+      timeout)))
+
+(defn- eval-js
+  "Evaluates a compiled form in the runtime, not after *deadline*."
+  [compiled ns runtime {:keys [timeout] :as opts}]
+  (let [timeout (cond-> (or timeout 30000) (time-left) (min (time-left)))]
+    (if (<= timeout 0)
+      {:error "Timed out"}
+      (eval-js* compiled ns runtime (assoc opts :timeout timeout)))))
 
 (defn- eval-form
   "Evaluates form in namespace ns, returns {:ns :value :out :err :warnings

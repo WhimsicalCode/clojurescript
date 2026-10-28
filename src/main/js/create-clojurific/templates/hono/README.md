@@ -22,4 +22,6 @@ The compiler needs Java 17 or later: `npx cljf setup-java` downloads one.
 
 Editors connect to the dev server's nREPL server, its port in `.nrepl-port`
 (i.e. Calva's "Connect to a running REPL", CIDER's `cider-connect-clj`), and
-evaluate `(cljf.esm.repl/repl)` to switch the session to ClojureScript.
+evaluate `(cljf.esm.repl/repl)` to switch the session to ClojureScript. Its
+cider-nrepl middleware completes the build's namespaces and vars and the
+runtime's JavaScript properties, for editors and Tab in `npm run repl`.

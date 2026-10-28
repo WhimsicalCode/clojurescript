@@ -1514,7 +1514,12 @@
                                        (recompile-changes! files nses)))
                                    (catch Throwable e
                                      (doto (assoc (error-data e) :type "error")
-                                       (->> (event! "error")))))))))))]
+                                       (->> (event! "error"))))
+                                   (finally
+                                     ;; the REPL's tools (cider-nrepl) answer
+                                     ;; from this value during the next one
+                                     (when (:esm-repl opts)
+                                       ((requiring-resolve 'cljf.esm.repl/compiled!)))))))))))]
     (when (:exit-with-parent opts)
       (start-stdin-reader! queue))
     (event! "watch-dirs" {:dirs dirs})
