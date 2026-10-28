@@ -44,6 +44,11 @@
   ;; the watcher's build, see cljf.esm/watch
   (atom nil))
 
+(defonce ^:private env-snapshot
+  ;; [compiler-env value]: the build's compiler environment's value taken
+  ;; last while no compile held the build lock, see compiler-env-snapshot
+  (atom nil))
+
 (defonce ^:private runtimes-
   ;; {runtime-id {:runtime-id :url :title :user-agent :visible :focused-at
   ;; :connected-at :tag}}
@@ -66,6 +71,7 @@
   messages to runtimes, the Vite plugin's by default. Starts an nREPL server
   under :repl {:nrepl-port 0}, see cljf.esm.repl.nrepl."
   [b]
+  (reset! env-snapshot nil)
   (reset! build b)
   (let [{:keys [repl]} (:options b)]
     (when (and (map? repl) (contains? repl :nrepl-port) (:nrepl-port repl))
@@ -80,6 +86,7 @@
   "Forgets the build and its runtimes."
   []
   (reset! build nil)
+  (reset! env-snapshot nil)
   (reset! runtimes- {}))
 
 (defn- fail-pending! [runtime-id message]
@@ -156,6 +163,35 @@
                         tag        (str "No runtime tagged " (pr-str tag) ", see (cljf.esm.repl/runtimes)")
                         :else      "No JavaScript runtime connected: open a page running the build, or start a server running it")
                {:runtime-id runtime-id :tag tag :runtimes (runtimes)}))))
+
+(defn- target-or-nil
+  "The runtime opts target, see target, nil when it isn't connected."
+  [opts]
+  (try
+    (target opts)
+    (catch clojure.lang.ExceptionInfo _ nil)))
+
+(defn target-id
+  "Returns the id of the runtime that opts (:runtime-id, :tag) target, the
+  default one without them, or nil when it isn't connected."
+  [opts]
+  (:runtime-id (target-or-nil opts)))
+
+(defn runtime-data
+  "Returns the data kept under k for runtime runtime-id (see
+  update-runtime-data!), forgotten when it disconnects or the build stops."
+  [runtime-id k]
+  (get-in @runtimes- [runtime-id ::data k]))
+
+(defn update-runtime-data!
+  "Applies f (and args) to the data kept under k for runtime runtime-id, if
+  it's connected. Returns the new data."
+  [runtime-id k f & args]
+  (-> (swap! runtimes- (fn [rs]
+                         (if (contains? rs runtime-id)
+                           (update-in rs [runtime-id ::data k] #(apply f % args))
+                           rs)))
+      (get-in [runtime-id ::data k])))
 
 (defn- request!
   "Sends msg to runtime runtime-id, returns its reply, {:error ...} if it
@@ -247,6 +283,28 @@
   [ns]
   (when-not (ana/get-namespace ns)
     (swap! env/*compiler* assoc-in [::ana/namespaces ns] {:name ns})))
+
+(defn compiling?
+  "Whether a compile (a recompile, or the REPL's) holds the build lock."
+  []
+  (boolean (some-> ^ReentrantLock (:lock @build) .isLocked)))
+
+(defn compiler-env-snapshot
+  "Returns a value of the build's compiler environment no compile is
+  changing: the current one when the build lock is free, else the last one
+  taken while it was (the current one before any). nil without a build.
+  Doesn't wait for the lock, for tools answering from it (cider-nrepl)."
+  []
+  (when-let [{:keys [compiler-env lock]} @build]
+    (if (and lock (.tryLock ^ReentrantLock lock))
+      (try
+        (let [v @compiler-env]
+          (reset! env-snapshot [compiler-env v])
+          v)
+        (finally
+          (.unlock ^ReentrantLock lock)))
+      (let [[cenv v] @env-snapshot]
+        (if (identical? cenv compiler-env) v @compiler-env)))))
 
 (defn cljs-ns?
   "Whether ns is a ClojureScript namespace of the build or the REPL."
@@ -408,7 +466,7 @@
                           (filter source-ns?)
                           doall)))
         compile  (distinct (concat new (filter #(with-build (fn [] (build-ns? %))) reloads)))
-        runtime  (try (target opts) (catch Exception _ nil))]
+        runtime  (target-or-nil opts)]
     (cond
       (seq npm)
       {:error (str "npm modules can't be required at the REPL, require them in a namespace of the build: "
@@ -734,7 +792,7 @@
                   :err   (str err "; evaluated the forms, not hot reloaded: reload hooks not run\n")}
             (select-keys failed [:error :stack :ex-data]))))
       (let [{:keys [compile! options]} (the-build)
-            runtime (try (target opts) (catch Exception _ nil))]
+            runtime (target-or-nil opts)]
         (when-not (with-build #(build-ns? ns))
           (swap! (:cljf.esm/repl-mains options) conj ns))
         ;; nil when the watcher compiled the file already (saved), the page may
