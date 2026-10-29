@@ -8,7 +8,7 @@ Scaffolds a ClojureScript project compiled by
 npm create clojurific@latest
 ```
 
-It asks for the project's name, a framework (Vanilla, [Reagent](https://reagent-project.github.io/),
+It asks for the project's name, a framework (Vanilla, [React](https://react.dev/) with `#x` literals, [Reagent](https://reagent-project.github.io/),
 [UIx](https://uix-cljs.dev/), or [Hono](https://hono.dev/) for a backend), and
 whether to install the dependencies and start the dev server. The project's namespace comes from its
 name: `my-app` gets `src/my_app/core.cljs`, `my-app.core`. The compiler needs
@@ -34,7 +34,7 @@ npm create clojurific@latest my-api -- --template hono
 
 | Option | |
 |---|---|
-| `-t`, `--template <name>` | `vanilla`, `reagent`, `uix` or `hono` |
+| `-t`, `--template <name>` | `vanilla`, `react`, `reagent`, `uix` or `hono` |
 | `--overwrite` | remove the target directory's files |
 | `-i`, `--immediate` | install the dependencies and start the dev server |
 | `--no-interactive` | don't ask, use the defaults (`vanilla`, no install) |

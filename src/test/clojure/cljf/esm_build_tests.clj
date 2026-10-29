@@ -345,3 +345,168 @@
                (outstanding {} {:files ["out/a.js"] :warnings [a1 user]} #{"out/a.js"})))
         (is (= [{"out/a.js" [a1]} [a1]]
                (outstanding {"out/a.js" [a1]} {:files [] :warnings []} #{"out/a.js"})))))))
+
+(deftest jsx-literals-require-cljf-jsx-only-when-there-are-any
+  (let [dir (temp-dir)
+        ns-requires (fn [source]
+                      (let [f (io/file dir "t.cljs")]
+                        (spit f source)
+                        (set (:requires (ana/parse-ns f)))))]
+    (is (contains? (ns-requires "(ns t) (defn f [] #x [:p])") 'cljf.jsx))
+    (is (contains? (ns-requires "(ns t (:require [clojure.string :as s])) (def a #jsx [:p (s/trim \" \")])") 'cljf.jsx))
+    (testing "not for the tags in strings and comments, nor other tags"
+      (is (not (contains? (ns-requires "(ns t) ;; #x [:p]\n(def s \"#x [:p]\") (def u #uuid \"00000000-0000-0000-0000-000000000000\")") 'cljf.jsx))))))
+
+(deftest jsx-literals-call-the-jsx-runtime
+  (let [dir     (temp-dir)
+        ms      (- (System/currentTimeMillis) 60000)
+        runtime (io/file dir "node_modules" "react" "jsx-runtime.js")
+        sources (into {} [(write-source! dir 'test.jsx
+                            "(ns test.jsx)
+                             (defn Item [^js p] #x [:li (.-label p)])
+                             (defn view [{:keys [items extra style n]}]
+                               #jsx [:<>
+                                     [:div#main.a {:class \"b\" :on-click identity :data-x 1
+                                                   :style {:font-size 12 :--gap \"1px\"} :key \"k\"}
+                                      (if (seq items) #x [:ul (for [i items] #x [Item {:label i :key i}])] \"none\")
+                                      n]
+                                     [:p {:& extra :title \"t\" :style style}]])
+                             (js/console.log (js/JSON.stringify
+                               (view {:items [1 2] :n 3 :extra {:tab-index 2 :aria-label \"l\"} :style {:z-index 1}})))"
+                            ms)])]
+    (io/make-parents runtime)
+    (spit runtime "const el = (type, props, key) => ({type: typeof type === 'function' ? type.name : type, key: key ?? null, props});
+                   export const jsx = el, jsxs = el, Fragment = 'Fragment';")
+    (spit (io/file dir "node_modules" "react" "package.json")
+      "{\"name\": \"react\", \"type\": \"module\", \"exports\": {\"./jsx-runtime\": \"./jsx-runtime.js\"}}")
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.jsx :output-dir (str (io/file dir "out"))}))
+    (let [out (output dir 'test.jsx)]
+      (testing "a namespace with #x literals requires cljf.jsx implicitly"
+        (is (string/includes? out "import * as cljf$jsx from \"../cljf/jsx.js\";")))
+      (testing "literal props are JavaScript objects, with JavaScript names"
+        (is (string/includes? out "{\"className\": \"a b\", \"onClick\": cljs$core.identity, \"data-x\": (1), \"style\": {\"fontSize\": (12), \"--gap\": \"1px\"}, \"id\": \"main\""))
+        (is (string/includes? out "}, \"k\")")))
+      (testing "only the values the compiler can't see into are converted"
+        (is (string/includes? out "{...cljf$jsx.props(extra), \"title\": \"t\", \"style\": cljf$jsx.style(style)}"))
+        (is (string/includes? out "jsx(test$jsx$Item, {\"label\": i}, (i ?? undefined))"))
+        (is (string/includes? out "cljf$jsx.child(n)"))))
+    (let [proc (.start (doto (ProcessBuilder. ["node" (str (io/file dir "out" "test" "jsx.js"))])
+                         (.redirectErrorStream true)))
+          res  (json/read-str (string/trim (slurp (.getInputStream proc))))]
+      (.waitFor proc)
+      (is (= {"type" "Fragment" "key" nil
+              "props" {"children"
+                       [{"type" "div" "key" "k"
+                         "props" {"className" "a b" "data-x" 1 "style" {"fontSize" 12 "--gap" "1px"} "id" "main"
+                                  "children" [{"type" "ul" "key" nil
+                                               "props" {"children" [{"type" "test$jsx$Item" "key" 1 "props" {"label" 1}}
+                                                                    {"type" "test$jsx$Item" "key" 2 "props" {"label" 2}}]}}
+                                              3]}}
+                        {"type" "p" "key" nil
+                         "props" {"tabIndex" 2 "aria-label" "l" "title" "t" "style" {"zIndex" 1}}}]}}
+             res)))))
+
+(defn- stub-jsx-runtime!
+  "A JSX runtime (src/jsx-runtime, src an import source: a package or a
+  package's subpath) in dir's node_modules, its elements naming src."
+  [^File dir src]
+  (let [[pkg-name sub] (string/split src #"/" 2)
+        pkg  (io/file dir "node_modules" pkg-name)
+        path (str (when sub (str sub "/")) "jsx-runtime.js")]
+    (io/make-parents (io/file pkg path))
+    (spit (io/file pkg path)
+      (str "const el = (type, props, key) => ({runtime: '" src "', type: typeof type === 'function' ? type.name : type, key: key ?? null, props});
+            export const jsx = el, jsxs = el, Fragment = '" src "-Fragment';"))
+    (spit (io/file pkg "package.json")
+      (str "{\"name\": \"" pkg-name "\", \"type\": \"module\", \"exports\": {\"./" (str (when sub (str sub "/")) "jsx-runtime") "\": \"./" path "\"}}"))))
+
+(defn- run-node [^File f]
+  (let [proc (.start (doto (ProcessBuilder. ["node" (str f)]) (.redirectErrorStream true)))
+        out  (slurp (.getInputStream proc))]
+    (.waitFor proc)
+    out))
+
+(deftest jsx-import-source-picks-the-jsx-runtime
+  (let [dir     (temp-dir)
+        ms      (- (System/currentTimeMillis) 60000)
+        sources (into {} [(write-source! dir 'test.jsxsrc
+                            "(ns test.jsxsrc (:require [test.jsxsrv :as srv]))
+                             (js/console.log (js/JSON.stringify #js [#x [:<> [:p]] (srv/page)]))"
+                            ms)
+                          (write-source! dir 'test.jsxsrv
+                            "(ns ^{:jsx-import-source \"hono/jsx\"} test.jsxsrv)
+                             (defn page [] #x [:<> [:h1 {:class \"t\"} \"Hi\"]])"
+                            ms)])]
+    (stub-jsx-runtime! dir "preact")
+    (stub-jsx-runtime! dir "hono/jsx")
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.jsxsrc :output-dir (str (io/file dir "out")) :jsx-import-source "preact"}))
+    (testing "the build's :jsx-import-source is cljf.jsx's runtime"
+      (is (string/includes? (slurp (io/file dir "out" "cljf" "jsx.js")) "from \"preact/jsx-runtime\"")))
+    (testing "a namespace's :jsx-import-source metadata imports its own"
+      (is (string/includes? (output dir 'test.jsxsrv) "from \"hono/jsx/jsx-runtime\"")))
+    (is (= [{"runtime" "preact" "type" "preact-Fragment" "key" nil
+             "props" {"children" {"runtime" "preact" "type" "p" "key" nil "props" {}}}}
+            {"runtime" "hono/jsx" "type" "hono/jsx-Fragment" "key" nil
+             "props" {"children" {"runtime" "hono/jsx" "type" "h1" "key" nil
+                                  "props" {"className" "t" "children" "Hi"}}}}]
+           (json/read-str (string/trim (run-node (io/file dir "out" "test" "jsxsrc.js"))))))))
+
+(deftest a-changed-jsx-import-source-recompiles
+  (let [dir     (temp-dir)
+        sources (into {} [(write-source! dir 'test.jsxchg "(ns test.jsxchg) (def e #x [:p])"
+                            (- (System/currentTimeMillis) 60000))])
+        build   #(binding [esm/*generated-sources* sources]
+                   (esm/build (merge {:main 'test.jsxchg :output-dir (str (io/file dir "out"))} %)))]
+    (build {})
+    (is (string/includes? (slurp (io/file dir "out" "cljf" "jsx.js")) "from \"react/jsx-runtime\""))
+    (build {:jsx-import-source "preact"})
+    (is (string/includes? (slurp (io/file dir "out" "cljf" "jsx.js")) "from \"preact/jsx-runtime\""))))
+
+(deftest jsx-literals-keys-classes-and-children
+  (let [dir     (temp-dir)
+        ms      (- (System/currentTimeMillis) 60000)
+        sources (into {} [(write-source! dir 'test.jsxrev
+                            "(ns test.jsxrev)
+                             (defn k [e] (.-key e))
+                             (defn props [e] (.-props e))
+                             (defn run [^js items m on? attrs]
+                               (js/console.log (js/JSON.stringify
+                                 #js {:nil-key        (k #x [:li {:key (:id {})}])
+                                      :literal-key    (k #x [:li {:key :a}])
+                                      :nested-key     (k #x [:li {:& {:key \"n\" :title \"t\"}}])
+                                      :spread-key     (k #x [:li {:& m}])
+                                      :spread-props   (props #x [:li {:& m}])
+                                      :outer-key-wins (k #x [:li {:& m :key \"o\"}])
+                                      :class-vector   (.-className (props #x [:div.a {:class [\"b\" (when on? \"c\") nil]}]))
+                                      :class-runtime  (.-className (props #x [:div {:class (if on? [:x [\"y\"]] \"z\")}]))
+                                      :keyword-value  (.-type (props #x [:button {:type :submit}]))
+                                      :vector-child   (.-children (props #x [:ul (mapv (fn [i] #x [:li i]) [1 2])]))
+                                      :shadowed-local (.-children (props #x [:ul (let [items (for [i items] i)] items)]))
+                                      :hiccup-child   (try (props #x [:ul [:li] (identity [:li])]) nil (catch :default e (.-message e)))
+                                      :map-child      (try (props #x [:div attrs]) nil (catch :default e (.-message e)))})))
+                             (run #js [1 2] {:key \"m\" :tab-index 1 :class [:p :q]} true {:class \"x\"})"
+                            ms)])]
+    (stub-jsx-runtime! dir "react")
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.jsxrev :output-dir (str (io/file dir "out"))}))
+    (let [r (json/read-str (string/trim (run-node (io/file dir "out" "test" "jsxrev.js"))))]
+      (testing "a nil :key is no key, as in Reagent"
+        (is (nil? (get r "nil-key"))))
+      (is (= "a" (get r "literal-key")))
+      (testing "the :key of maps spread, literal or at runtime, is the key argument, not a prop"
+        (is (= "n" (get r "nested-key")))
+        (is (= "m" (get r "spread-key")))
+        (is (= {"tabIndex" 1 "className" "p q"} (get r "spread-props")))
+        (is (= "o" (get r "outer-key-wins"))))
+      (testing ":class collections are joined, keyword values are their names"
+        (is (= "a b c" (get r "class-vector")))
+        (is (= "x y" (get r "class-runtime")))
+        (is (= "submit" (get r "keyword-value"))))
+      (testing "vectors of elements are children, the locals let binds aren't the outer ones"
+        (is (= 2 (count (get r "vector-child"))))
+        (is (= [1 2] (get r "shadowed-local"))))
+      (testing "hiccup and maps outside #x fail clearly"
+        (is (string/starts-with? (get r "hiccup-child") "A hiccup vector isn't a #x child"))
+        (is (string/starts-with? (get r "map-child") "A map isn't a #x child"))))))

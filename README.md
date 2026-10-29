@@ -52,6 +52,7 @@ npm create clojurific@latest
 
 This scaffolds a Vite project based on one of the following templates:
 * Vanilla
+* [React](https://react.dev/), with [`#x` literals](#jsx-literals)
 * [Reagent](https://reagent-project.github.io/)
 * [UIx](https://uix-cljs.dev/)
 * [Hono](https://hono.dev/) (backend)
@@ -126,6 +127,7 @@ Options are EDN maps, `@file.edn` to read them from a file, and `:profile` keywo
 | `:extra-main` | namespaces added to `:main`, e.g. by the Vite plugin, the namespaces of the pages' `.cljs` scripts |
 | `:js-entries` | `{name {:exports {jsName my.ns/var}}}`, generated entry modules (`cljs-esm-entries/<name>.js`) exporting vars under JavaScript names, for libraries and workers; an undefined var fails the build |
 | `:preloads` | namespaces the main namespaces import first |
+| `:jsx-import-source` | the JSX runtime of [`#x` literals](#jsx-literals), `<source>/jsx-runtime`: `"preact"`, `"hono/jsx"`; default `"react"` |
 | `:parallel-build` | compiles namespaces in parallel once their dependencies are compiled |
 | `:npm-interop :shadow` | `["pkg" :as x]` binds CommonJS packages' `module.exports`, like shadow-cljs; needs the Vite plugin |
 | `:closure-defines {goog.DEBUG false}` | `goog.DEBUG` and `goog-define`s are compile time constants. `goog.DEBUG` is `false` in `:release` builds (the `:release` profile, and `build` without a profile), like shadow-cljs' release mode, unless `:closure-defines` sets it |
@@ -366,6 +368,43 @@ describe(1, 2); // error TS2554: Expected 1 arguments, but got 2.
 ```
 
 `this` is bound once `(super ...)` has called the base class' constructor, which a constructor without a `(super ...)` call does first with its params. The methods and protocol implementations are `extend-type`'s. It isn't specific to `:module-format :esm`.
+
+### JSX literals
+
+`#x` (or `#jsx`, as in [squint](https://github.com/squint-cljs/squint#jsx)) is a React element: hiccup compiled to calls of the JSX runtime (`react/jsx-runtime`), with no hiccup interpreted at runtime:
+
+```clojure
+(ns my.app
+  (:require ["react" :as react]))
+
+(defn Counter [^js props]
+  (let [[n set-n!] (react/useState 0)]
+    #x [:div.counter {:style {:font-size 14}}
+        [:button {:on-click #(set-n! inc)} (.-label props) " " n]
+        (when (pos? n)
+          #x [:ul (for [i (range n)] #x [:li {:key i} i])])]))
+
+(.render root #x [Counter {:label "Clicks"}])
+```
+
+```js
+jsxs("div", {className: "counter", style: {fontSize: 14}, children: [jsxs("button", {onClick: ..., children: [props.label, " ", n]}), ...]})
+```
+
+- A props map literal is a JavaScript object built where the element is, its keys renamed when compiling: `:class` to `className`, `:for` to `htmlFor`, kebab-case camelCased (`:on-click` to `onClick`), `data-*` and `aria-*` and strings as they are. A `:style` map literal is a JavaScript object too, with camelCased CSS names (custom properties as they are). Only the values are evaluated at runtime.
+- `:class` takes a string, keyword or collection: a vector literal of strings is joined when compiling, other collections at runtime (nested ones too, `nil` and `false` left out), joined after the tag's classes. Keyword values (`{:type :submit}`) are their names.
+- Values the compiler can't see into are converted at runtime: `{:& props}` spreads `props` (a map converted once per map and cached, or a JavaScript object), with the map's other props overriding it, and a `:style` that isn't a literal is converted the same way. A `#js` literal, or a value tagged `^js`, isn't converted.
+- Children vectors are elements. Other forms are ClojureScript, whose elements need `#x` again, as in squint: `(for [i xs] #x [:li i])`. Strings, numbers, elements and JavaScript values are children as they are; other values are checked at runtime, sequences and vectors of elements (of `for`, `map`, `mapv`) becoming arrays. Hiccup vectors and maps reaching a child at runtime throw: the props are a map literal after the tag, or `{:& m}`.
+- `:key` is the runtime's key argument, from the props or a map they spread (`{:& m}`), never a prop; a `nil` key is no key, as in Reagent. `[:<> ...]` is a fragment, `[:div#id.a.b]` sets `id` and `className`, `[Component {...}]` passes the props object to a component, which reads it with `.-` (it's a JavaScript object).
+- A namespace whose source file has `#x` literals requires `cljf.jsx` implicitly, and the REPL requires it in the namespace of a form with `#x` literals (i.e. from an editor's unsaved buffer, or a namespace only defined at the REPL).
+- The elements are the JSX runtime's of `:jsx-import-source`, as TypeScript's `jsxImportSource`: `<source>/jsx-runtime`, `react/jsx-runtime` by default. Preact (`"preact"`), Hono (`"hono/jsx"`, which `c.html` renders on the server) and other runtimes exporting `jsx`, `jsxs` and `Fragment` work the same way. A namespace's metadata overrides it, i.e. a server's pages in a build of a React app:
+
+  ```clojure
+  (ns ^{:jsx-import-source "hono/jsx"} my.server)
+  ```
+
+  Props get React's names (`className`, `htmlFor`), which Preact and Hono accept too.
+- Source maps point the elements, their props and children to their place in the literal.
 
 ### `^:export`
 

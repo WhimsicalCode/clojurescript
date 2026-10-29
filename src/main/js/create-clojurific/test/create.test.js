@@ -71,12 +71,19 @@ for (const template of TEMPLATES) {
     const source = readFileSync(path.join(root, 'src', 'my_app', 'core.cljs'), 'utf8');
     assert.match(source, /^\(ns my-app\.core\b/);
     assert.match(source, /src\/my_app\/core\.cljs/);
+    if (template === 'react') {
+      assert.ok(pkg.dependencies.react);
+      assert.doesNotMatch(deps, /reagent|uix/);
+      assert.match(source, /#x \[App\]/);
+    }
     if (template === 'hono') {
       assert.deepEqual(pkg.scripts, { dev: 'vite', build: 'vite build', start: 'node dist/index.js', repl: 'cljf repl' });
       assert.ok(pkg.dependencies.hono);
       // the app is a :js-entries export the dev server runs, no pages
       assert.match(viteConfig, /default: "'my-app\.core\/app"/);
       assert.match(viteConfig, /ssrEntries: \['server'\]/);
+      assert.match(viteConfig, /jsxImportSource: 'hono\/jsx'/);
+      assert.match(source, /\(\.html c \(str "<!doctype html>" \(page\)\)\)/);
       assert.match(source, /\(def app\b/);
       assert.ok(!existsSync(path.join(root, 'index.html')));
     } else {

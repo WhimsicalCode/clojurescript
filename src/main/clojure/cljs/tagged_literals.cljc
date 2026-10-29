@@ -84,10 +84,17 @@
                  "JavaScript literal keys must be strings or unqualified keywords"))))
   (JSValue. form))
 
+(defn read-jsx
+  "#x and #jsx, hiccup compiled to calls of the JSX runtime: cljf.jsx/x."
+  [form]
+  (list 'cljf.jsx/x form))
+
 (def ^:dynamic *cljs-data-readers*
   (merge ;; assumes we can read all data_readers
     #?(:clj *data-readers*)
     {'queue read-queue
      'uuid  read-uuid
      'inst  read-inst
-     'js    read-js}))
+     'js    read-js
+     'x     read-jsx
+     'jsx   read-jsx}))

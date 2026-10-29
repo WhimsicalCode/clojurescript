@@ -3563,6 +3563,109 @@ x                          (not (contains? ret :info)))
   #{:use :use-macros :require :require-macros
     :import :refer-global :require-global})
 
+#?(:clj
+   (def ^:private jsx-literals-cache
+     "jsx-literals? of source files, {path-or-url [modification-time v]}: a
+     build parses each namespace's ns form several times."
+     (java.util.concurrent.ConcurrentHashMap.)))
+
+#?(:clj (declare jsx-literals?*))
+
+#?(:clj
+   (defn- jsx-literals?
+     "Whether source file (a File, path or URL, *cljs-file*) has #x or #jsx
+     literals (cljf.jsx/x), see jsx-literals?*."
+     [file]
+     (try
+       (let [s     (str file)
+             f     (io/file s)
+             src   (cond
+                     (.isFile f) f
+                     (instance? URL file) file
+                     ;; cljs.closure's sources in jars, file:/x.jar!/my/ns.cljs
+                     (re-find #"^file:.*!/" s) (URL. (str "jar:" s))
+                     (re-find #"^(?:file|jar):" s) (URL. s))
+             cache ^java.util.concurrent.ConcurrentHashMap jsx-literals-cache]
+         (if (nil? src)
+           ;; not a source file, i.e. the REPL's <cljs repl>
+           false
+           ;; one entry per file, replaced when it changes
+           (let [k     (str src)
+                 mtime (util/last-modified src)
+                 [m v] (.get cache k)]
+             (if (and (some? v) (= m mtime))
+               v
+               (let [v (boolean (jsx-literals?* src))]
+                 (.put cache k [mtime v])
+                 v)))))
+       ;; never fails a build: a source it can't read has no #x literals
+       (catch Exception _ false))))
+
+#?(:clj
+   (defn- jsx-literals?*
+     "Whether file has #x or #jsx literals: read again for them when its text
+     has the tags, so that strings and comments mentioning them don't count."
+     [file]
+     (try
+       (let [src (slurp file)]
+         (when (re-find #"#(?:x|jsx)(?=[\s,\[])" src)
+           (let [found (volatile! false)
+                 tag   (fn [form] (vreset! found true) form)
+                 eof   (Object.)
+                 opts  (cond-> {:eof eof}
+                         (= "cljc" (util/ext (str file))) (assoc :read-cond :allow :features #{:cljs}))
+                 rdr   (readers/indexing-push-back-reader (PushbackReader. (java.io.StringReader. src)) 1 nil)]
+             (binding [*ns*                           (create-ns 'cljs.user)
+                       reader/*data-readers*          {'x tag 'jsx tag}
+                       reader/*default-data-reader-fn* (fn [_ form] form)
+                       reader/*read-eval*             false
+                       ;; ::alias/kw of aliases not known yet
+                       reader/*alias-map*             (fn [sym] sym)]
+               (loop []
+                 (when-not (or @found (identical? eof (reader/read opts rdr)))
+                   (recur))))
+             @found)))
+       ;; not a readable file, i.e. the REPL's <cljs repl>
+       (catch Throwable _ false))))
+
+#?(:clj
+   (defn jsx-runtime
+     "The JSX runtime module of import source src (:jsx-import-source, as
+     TypeScript's jsxImportSource), i.e. react/jsx-runtime."
+     [src]
+     (str (or src "react") "/jsx-runtime")))
+
+#?(:clj
+   (defn- implicit-jsx-require
+     "The ns specs args of namespace name, with the requires #x literals
+     (cljf.jsx/x) need: cljf.jsx when its source has #x literals, and the JSX
+     runtime of its :jsx-import-source metadata (as cljf-jsx-runtime) when it
+     has that. cljf.jsx itself imports the build's :jsx-import-source's."
+     [name args opts]
+     (let [require? #(and (sequential? %) (= :require (first %)))
+           requires (mapcat rest (filter require? args))
+           lib      #(if (sequential? %) (first %) %)
+           add      (fn [args specs]
+                      (if (some require? args)
+                        (map #(if (require? %) (concat % specs) %) args)
+                        (concat args [(list* :require specs)])))
+           runtime  (fn [src] [(jsx-runtime src) :as 'cljf-jsx-runtime])]
+       (cond
+         (:macros-ns opts) args
+
+         (= 'cljf.jsx name)
+         (add args [(runtime (:jsx-import-source (compiler-options)))])
+
+         :else
+         (let [required? (some #(= 'cljf.jsx (lib %)) requires)
+               literals? (and (not required?) (some? *cljs-file*) (jsx-literals? *cljs-file*))
+               src       (:jsx-import-source (meta name))]
+           (cond-> args
+             literals? (add ['cljf.jsx])
+             (and src (or required? literals?)
+                  (not-any? #(and (sequential? %) (= 'cljf-jsx-runtime (second (drop-while (complement #{:as}) %)))) requires))
+             (add [(runtime src)])))))))
+
 (defmethod parse 'ns
   [_ env [_ name & args :as form] _ opts]
   (when-not *allow-ns*
@@ -3589,7 +3692,9 @@ x                          (not (contains? ret :info)))
           metadata     (when (map? (first args)) (first args))
           args         (desugar-ns-specs
                          #?(:clj  (rewrite-cljs-aliases
-                                    (if metadata (next args) args))
+                                    ;; #x literals require cljf.jsx implicitly
+                                    (implicit-jsx-require (vary-meta name merge metadata)
+                                      (if metadata (next args) args) opts))
                             :cljs (if (some? metadata) (next args) args)))
           {:keys [as-aliases] args :libspecs} (nses/elide-aliases-from-ns-specs args)
           name         (vary-meta name merge metadata)
@@ -5105,7 +5210,7 @@ x                          (not (contains? ret :info)))
        [:static-fns :fn-invoke-direct :optimize-constants :elide-asserts :target :nodejs-rt
         :cache-key :checked-arrays :language-out :optimizations :lite-mode :elide-to-string
         :module-format :esm-hmr :esm-repl :npm-interop :closure-defines :preloads :mode :load-tests
-        :checked-set-literals :warnings-as-errors])))
+        :checked-set-literals :warnings-as-errors :jsx-import-source])))
 
 #?(:clj
    (defn build-affecting-options-sha [path opts]

@@ -27,6 +27,7 @@ Options:
 
 const FRAMEWORKS = [
   { value: 'vanilla', label: 'Vanilla', color: c.yellow },
+  { value: 'react', label: 'React', color: c.blue, hint: '#x literals, https://react.dev/' },
   { value: 'reagent', label: 'Reagent', color: c.cyan, hint: 'https://reagent-project.github.io/' },
   { value: 'uix', label: 'UIx', color: c.magenta, hint: 'https://uix-cljs.dev/' },
   { value: 'hono', label: 'Hono (backend only)', color: c.red, hint: 'https://hono.dev/' },

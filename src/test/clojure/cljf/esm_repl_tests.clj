@@ -131,6 +131,12 @@
         cenv (env/default-compiler-env (merge esm/default-opts opts))
         build! #(do (esm/build opts cenv)
                     {:type "compiled" :warnings []})]
+    ;; a JSX runtime for #x literals, see evaluates-jsx-literals
+    (spit (doto (io/file dir "node_modules" "react" "jsx-runtime.js") io/make-parents)
+      "const el = (type, props, key) => ({type, key: key ?? null, props});
+       export const jsx = el, jsxs = el, Fragment = 'Fragment';")
+    (spit (io/file dir "node_modules" "react" "package.json")
+      "{\"name\": \"react\", \"type\": \"module\", \"exports\": {\"./jsx-runtime\": \"./jsx-runtime.js\"}}")
     (build!)
     (let [{:keys [proc send!]} (start-node! dir)]
       (try
@@ -215,6 +221,17 @@
   (testing "namespaces only defined at the REPL"
     (is (= ["nil" "#'scratch.ns/y" "2"]
            (:results (repl/cljs-eval "(ns scratch.ns (:require [esm-repl.app :as app])) (def y 2) y"))))))
+
+(deftest evaluates-jsx-literals
+  (testing "#x needs cljf.jsx, which the REPL compiles and loads"
+    (let [r (repl/cljs-eval "(ns scratch.jsx (:require [cljf.jsx])) (js/JSON.stringify #x [:div.a {:on-click identity :data-n 1} (for [i [1 2]] #x [:i {:key i} i])])")]
+      (is (= ["nil" (pr-str "{\"type\":\"div\",\"key\":null,\"props\":{\"data-n\":1,\"className\":\"a\",\"children\":[{\"type\":\"i\",\"key\":1,\"props\":{\"children\":1}},{\"type\":\"i\",\"key\":2,\"props\":{\"children\":2}}]}}")]
+             (:results r))
+          (pr-str r))))
+  (testing "#jsx is #x"
+    (is (= [(pr-str "p")] (:results (repl/cljs-eval "(.-type #jsx [:p])" {:ns 'scratch.jsx})))))
+  (testing "a namespace without cljf.jsx (i.e. an editor's unsaved buffer) requires it for #x"
+    (is (= [(pr-str "p")] (:results (repl/cljs-eval "(.-type #x [:p])" {:ns 'esm-repl.app}))))))
 
 (deftest fails-visibly
   (testing "a form with warnings isn't evaluated, nor are the forms after it"

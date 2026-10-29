@@ -5,6 +5,14 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ## 0.12.13 [Next]
 
+### Added
+
+- `#x` (or `#jsx`) literals, React elements of hiccup compiled to `react/jsx-runtime` calls (`cljf.jsx`, which namespaces using them require implicitly): props map literals become JavaScript objects at compile time, with React's prop names, and only spread props and children the compiler can't see into are converted at runtime. `:jsx-import-source` picks the JSX runtime (i.e. `"preact"`, `"hono/jsx"`), as TypeScript's `jsxImportSource`, for the build or, as metadata, a namespace. `create-clojurific` has a React template using them, and its Hono template renders a page with them.
+
+### Fixed
+
+- The REPL reported errors raised while macroexpanding (i.e. a macro's `ex-info`) without their message.
+
 ## 0.12.12 [2026-10-28]
 
 ### Added

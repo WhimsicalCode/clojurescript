@@ -709,13 +709,37 @@
       {:error "Timed out"}
       (eval-js* compiled ns runtime (assoc opts :timeout timeout)))))
 
+(defn- jsx-literals?
+  "Whether form has #x literals (cljf.jsx/x)."
+  [form]
+  (boolean
+    (some #(and (seq? %) (= 'cljf.jsx/x (first %)))
+      (tree-seq coll? seq form))))
+
+(declare eval-form)
+
+(defn- require-jsx
+  "Requires cljf.jsx in namespace ns for form's #x literals, unless ns does:
+  the compiler requires it for the namespaces whose source file has them,
+  the REPL for its forms (i.e. an editor's unsaved buffer, a namespace only
+  defined at the REPL). Returns an error result, nil once required."
+  [form ns file opts]
+  (when (and (jsx-literals? form)
+             (not= 'cljf.jsx ns)
+             (not (with-build #(some #{'cljf.jsx} (vals (:requires (ana/get-namespace ns)))))))
+    (let [r (eval-form '(require (quote cljf.jsx)) ns file opts)]
+      (when (:error r) r))))
+
 (defn- eval-form
   "Evaluates form in namespace ns, returns {:ns :value :out :err :warnings
   :error :stack :ex-data :runtime-id}, :ns the namespace evaluating the next
   form."
   [form ns file opts]
-  (let [special (with-build #(special-fn ns form))]
+  (let [special (with-build #(special-fn ns form))
+        failed  (when-not special (require-jsx form ns file opts))]
     (cond
+      failed failed
+
       (= :in-ns special)
       (let [[_ [quote' ns-sym]] form]
         (if-not (and (= 'quote quote') (symbol? ns-sym))
@@ -755,6 +779,13 @@
   [source file]
   (ana/forms-seq* (if (string? source) (StringReader. source) source) file))
 
+(defn- error-message
+  "The message of exception e, or of its first cause with one: the
+  analyzer's macroexpansion errors have none, their cause has."
+  [^Throwable e]
+  (or (some #(.getMessage ^Throwable %) (take-while some? (iterate #(.getCause ^Throwable %) e)))
+      (str (class e))))
+
 (defn- eval-forms
   "Evaluates the forms of source (a string) from namespace ns, calls
   on-result with each form's result (see eval-form) until one fails.
@@ -781,7 +812,7 @@
                              (eval-form form ana/*cljs-ns* file opts)
                              (catch Exception e
                                {:ns ana/*cljs-ns*
-                                :error (.getMessage e)
+                                :error (error-message e)
                                 :ex-data (some-> (ex-data e) (dissoc :runtimes) not-empty pr-str)}))]
                 (set! ana/*cljs-ns* (:ns result))
                 (on-result result)
