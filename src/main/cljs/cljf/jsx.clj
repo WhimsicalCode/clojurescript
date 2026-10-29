@@ -117,7 +117,13 @@
            (let [[h & more] form]
              (case h
                (if if-not) (every? #(static-child? env %) (rest more))
-               (when when-not when-let when-some do let) (static-child? env (last more))
+               (when when-not do) (static-child? env (last more))
+               ;; the locals they bind shadow env's, untagged
+               (let when-let when-some)
+               (let [bindings (first more)
+                     names    (when (vector? bindings)
+                                (->> (take-nth 2 bindings) (tree-seq coll? seq) (filter simple-symbol?)))]
+                 (static-child? (update env :locals #(reduce dissoc % names)) (last more)))
                (str cljs.core/str) true
                false)))))
 
@@ -141,6 +147,30 @@
     (or (nil? v) (string? v) (js-tagged? env v)) (arg v)
     :else (arg (wrap 'cljf.jsx/style v))))
 
+(defn- prop-value
+  "A prop's value: a keyword literal as its name, other forms as they are
+  (a keyword they evaluate to isn't converted)."
+  [v]
+  (if (keyword? v) (name v) v))
+
+(defn- class-code
+  "A :class value: a string, a vector literal of classes joined (nil and
+  false left out) when compiling, others joined at runtime when they're
+  collections, see cljf.jsx/class-name."
+  [env v]
+  (cond
+    (string? v) (arg v)
+    (keyword? v) (arg (name v))
+
+    (and (vector? v) (every? #(or (string? %) (keyword? %)) v))
+    (arg (string/join " " (map #(if (keyword? %) (name %) %) v)))
+
+    (or (nil? v) (js-tags (:tag (meta v)))
+        (and (symbol? v) ('#{string} (get-in env [:locals v :tag]))))
+    (arg v)
+
+    :else (arg (wrap 'cljf.jsx/class-name v))))
+
 (defn- prop-entries
   "The entries of a props map literal's JavaScript object, without :key."
   [env props]
@@ -153,9 +183,31 @@
              :else [[:spread (arg (wrap 'cljf.jsx/props v))]])
         :key nil
         :style [["style" (style-code env v)]]
-        [[(prop-name k) (arg v)]]))
+        :class [["className" (class-code env v)]]
+        [[(prop-name k) (arg (prop-value v))]]))
     ;; spreads first, the map's other props override them
     (sort-by (fn [[k]] (if (= :& k) 0 1)) props)))
+
+(defn- literal-key
+  "[found? form] of the :key of a props map literal: its own, else its
+  nested {:& {...}} literals' (the last one's)."
+  [props]
+  (if (contains? props :key)
+    [true (:key props)]
+    (let [nested (filter map? (keep (fn [[k v]] (when (= :& k) v)) props))]
+      (or (last (filter first (map literal-key nested))) [false nil]))))
+
+(defn- runtime-spreads
+  "The spreads of a props map literal converted at runtime, nested {:& {...}}
+  literals' too, in order."
+  [env props]
+  (mapcat (fn [[k v]]
+            (when (= :& k)
+              (cond
+                (map? v) (runtime-spreads env v)
+                (or (nil? v) (js-tagged? env v)) nil
+                :else [v])))
+          props))
 
 (defn- parse-tag
   "[type id classes] of an element's tag, :div.a.b#id's [\"div\" \"id\" [\"a\" \"b\"]]."
@@ -173,10 +225,50 @@
 
     :else [t nil nil]))
 
+(defn- key-code
+  "The code of an element's key, the runtime's key argument, nil without
+  one: a literal :key (nil leaves the element without a key, as in
+  Reagent), else the :key of the maps spread at runtime, the last one's
+  that has one (spread-forms, locals the element binds them to)."
+  [props spread-forms]
+  (let [[found? k] (literal-key props)]
+    (cond
+      (and found? (or (string? k) (number? k))) (arg k)
+      (and found? (keyword? k)) (arg (name k))
+      found? ["(~{} ?? undefined)" [k]]
+      (seq spread-forms)
+      [(str "(" (string/join " ?? " (repeat (count spread-forms) "~{}")) ")")
+       (vec (map #(list 'cljf.jsx/spread-key %) (reverse spread-forms)))])))
+
+(defn- bind-spreads
+  "Props with the forms of the maps spread at runtime that aren't locals
+  replaced by gensyms, read twice (for the props and the key): [props
+  bindings]."
+  [env props]
+  (let [bindings (volatile! [])
+        walk     (fn walk [props]
+                   (into (empty props)
+                     (map (fn [[k v]]
+                            (if (= :& k)
+                              (cond
+                                (map? v) [k (walk v)]
+                                (or (nil? v) (js-tagged? env v) (symbol? v)) [k v]
+                                :else (let [g (gensym "spread")]
+                                        (vswap! bindings conj g v)
+                                        [k (with-meta g (pos v))]))
+                              [k v])))
+                     props))]
+    (let [props (walk props)]
+      [props @bindings])))
+
 (defn element
-  "The code calling the JSX runtime for hiccup form [tag props? & children]."
+  "The code calling the JSX runtime for hiccup form [tag props? & children]:
+  [js*-template args bindings], bindings to bind around it."
   [env [t & more :as form]]
   (let [[props children] (if (map? (first more)) [(first more) (rest more)] [nil more])
+        [props bindings] (if (and props (not (first (literal-key props))) (seq (runtime-spreads env props)))
+                           (bind-spreads env props)
+                           [props []])
         [type id classes] (parse-tag t)
         props    (cond-> (or props {})
                    id (update :id #(or % id))
@@ -186,7 +278,9 @@
                                       (cond
                                         (nil? c) s
                                         (string? c) (str s " " c)
-                                        :else (list 'cljs.core/str s " " c))))))
+                                        (keyword? c) (str s " " (name c))
+                                        (vector? c) (into [s] c)
+                                        :else [s c])))))
         children (remove nil? children)
         entries  (concat (prop-entries env props)
                          (case (count children)
@@ -196,20 +290,21 @@
                                           [(str "[" (string/join ", " (map first cs)) "]")
                                            (vec (mapcat second cs))])]]))
         [pt pargs] (js-obj-code entries)
-        key?     (contains? props :key)]
-    (when-not (or (keyword? t) (symbol? t))
-      (throw (ex-info (str "#x elements are [:tag ...] or [Component ...], not " (pr-str form))
-                      {:form form})))
-    [(str "~{}(~{}, " pt (when key? ", ~{}") ")")
+        [kt kargs] (key-code props (runtime-spreads env props))]
+    [(str "~{}(~{}, " pt (when kt (str ", " kt)) ")")
      (vec (concat [(rt (if (< 1 (count children)) 'jsxs 'jsx)) type]
                   pargs
-                  (when key? [(:key props)])))]))
+                  kargs))
+     bindings]))
 
 (defn- element-form
-  "The js* form calling the JSX runtime for hiccup form, at its position."
+  "The form calling the JSX runtime for hiccup form, at its position."
   [env form]
-  (let [[t args] (element env form)]
-    (with-meta (list* 'js* t args) (assoc (pos form) :tag 'js))))
+  (let [[t args bindings] (element env form)
+        call (with-meta (list* 'js* t args) (assoc (pos form) :tag 'js))]
+    (if (seq bindings)
+      (with-meta (list 'let* bindings call) (assoc (pos form) :tag 'js))
+      call)))
 
 (defmacro x
   "#x [:div {:class \"a\" :on-click f} \"Hi \" name] (or #jsx) is

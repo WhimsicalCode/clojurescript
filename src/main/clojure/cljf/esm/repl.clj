@@ -709,13 +709,37 @@
       {:error "Timed out"}
       (eval-js* compiled ns runtime (assoc opts :timeout timeout)))))
 
+(defn- jsx-literals?
+  "Whether form has #x literals (cljf.jsx/x)."
+  [form]
+  (boolean
+    (some #(and (seq? %) (= 'cljf.jsx/x (first %)))
+      (tree-seq coll? seq form))))
+
+(declare eval-form)
+
+(defn- require-jsx
+  "Requires cljf.jsx in namespace ns for form's #x literals, unless ns does:
+  the compiler requires it for the namespaces whose source file has them,
+  the REPL for its forms (i.e. an editor's unsaved buffer, a namespace only
+  defined at the REPL). Returns an error result, nil once required."
+  [form ns file opts]
+  (when (and (jsx-literals? form)
+             (not= 'cljf.jsx ns)
+             (not (with-build #(some #{'cljf.jsx} (vals (:requires (ana/get-namespace ns)))))))
+    (let [r (eval-form '(require (quote cljf.jsx)) ns file opts)]
+      (when (:error r) r))))
+
 (defn- eval-form
   "Evaluates form in namespace ns, returns {:ns :value :out :err :warnings
   :error :stack :ex-data :runtime-id}, :ns the namespace evaluating the next
   form."
   [form ns file opts]
-  (let [special (with-build #(special-fn ns form))]
+  (let [special (with-build #(special-fn ns form))
+        failed  (when-not special (require-jsx form ns file opts))]
     (cond
+      failed failed
+
       (= :in-ns special)
       (let [[_ [quote' ns-sym]] form]
         (if-not (and (= 'quote quote') (symbol? ns-sym))

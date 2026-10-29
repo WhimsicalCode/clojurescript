@@ -18,6 +18,6 @@
 
 (def app
   (doto (Hono.)
-    (.get "/" (fn [c] (.html c (page))))
+    (.get "/" (fn [c] (.html c (str "<!doctype html>" (page)))))
     (.get "/clicks" state)
     (.post "/clicks" (fn [c] (swap! clicks inc) (state c)))))

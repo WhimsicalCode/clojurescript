@@ -389,7 +389,7 @@
         (is (string/includes? out "}, \"k\")")))
       (testing "only the values the compiler can't see into are converted"
         (is (string/includes? out "{...cljf$jsx.props(extra), \"title\": \"t\", \"style\": cljf$jsx.style(style)}"))
-        (is (string/includes? out "jsx(test$jsx$Item, {\"label\": i}, i)"))
+        (is (string/includes? out "jsx(test$jsx$Item, {\"label\": i}, (i ?? undefined))"))
         (is (string/includes? out "cljf$jsx.child(n)"))))
     (let [proc (.start (doto (ProcessBuilder. ["node" (str (io/file dir "out" "test" "jsx.js"))])
                          (.redirectErrorStream true)))
@@ -463,3 +463,50 @@
     (is (string/includes? (slurp (io/file dir "out" "cljf" "jsx.js")) "from \"react/jsx-runtime\""))
     (build {:jsx-import-source "preact"})
     (is (string/includes? (slurp (io/file dir "out" "cljf" "jsx.js")) "from \"preact/jsx-runtime\""))))
+
+(deftest jsx-literals-keys-classes-and-children
+  (let [dir     (temp-dir)
+        ms      (- (System/currentTimeMillis) 60000)
+        sources (into {} [(write-source! dir 'test.jsxrev
+                            "(ns test.jsxrev)
+                             (defn k [e] (.-key e))
+                             (defn props [e] (.-props e))
+                             (defn run [^js items m on? attrs]
+                               (js/console.log (js/JSON.stringify
+                                 #js {:nil-key        (k #x [:li {:key (:id {})}])
+                                      :literal-key    (k #x [:li {:key :a}])
+                                      :nested-key     (k #x [:li {:& {:key \"n\" :title \"t\"}}])
+                                      :spread-key     (k #x [:li {:& m}])
+                                      :spread-props   (props #x [:li {:& m}])
+                                      :outer-key-wins (k #x [:li {:& m :key \"o\"}])
+                                      :class-vector   (.-className (props #x [:div.a {:class [\"b\" (when on? \"c\") nil]}]))
+                                      :class-runtime  (.-className (props #x [:div {:class (if on? [:x [\"y\"]] \"z\")}]))
+                                      :keyword-value  (.-type (props #x [:button {:type :submit}]))
+                                      :vector-child   (.-children (props #x [:ul (mapv (fn [i] #x [:li i]) [1 2])]))
+                                      :shadowed-local (.-children (props #x [:ul (let [items (for [i items] i)] items)]))
+                                      :hiccup-child   (try (props #x [:ul [:li] (identity [:li])]) nil (catch :default e (.-message e)))
+                                      :map-child      (try (props #x [:div attrs]) nil (catch :default e (.-message e)))})))
+                             (run #js [1 2] {:key \"m\" :tab-index 1 :class [:p :q]} true {:class \"x\"})"
+                            ms)])]
+    (stub-jsx-runtime! dir "react")
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.jsxrev :output-dir (str (io/file dir "out"))}))
+    (let [r (json/read-str (string/trim (run-node (io/file dir "out" "test" "jsxrev.js"))))]
+      (testing "a nil :key is no key, as in Reagent"
+        (is (nil? (get r "nil-key"))))
+      (is (= "a" (get r "literal-key")))
+      (testing "the :key of maps spread, literal or at runtime, is the key argument, not a prop"
+        (is (= "n" (get r "nested-key")))
+        (is (= "m" (get r "spread-key")))
+        (is (= {"tabIndex" 1 "className" "p q"} (get r "spread-props")))
+        (is (= "o" (get r "outer-key-wins"))))
+      (testing ":class collections are joined, keyword values are their names"
+        (is (= "a b c" (get r "class-vector")))
+        (is (= "x y" (get r "class-runtime")))
+        (is (= "submit" (get r "keyword-value"))))
+      (testing "vectors of elements are children, the locals let binds aren't the outer ones"
+        (is (= 2 (count (get r "vector-child"))))
+        (is (= [1 2] (get r "shadowed-local"))))
+      (testing "hiccup and maps outside #x fail clearly"
+        (is (string/starts-with? (get r "hiccup-child") "A hiccup vector isn't a #x child"))
+        (is (string/starts-with? (get r "map-child") "A map isn't a #x child"))))))

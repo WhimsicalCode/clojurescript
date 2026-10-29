@@ -230,8 +230,8 @@
           (pr-str r))))
   (testing "#jsx is #x"
     (is (= [(pr-str "p")] (:results (repl/cljs-eval "(.-type #jsx [:p])" {:ns 'scratch.jsx})))))
-  (testing "without cljf.jsx"
-    (let [r (repl/cljs-eval "#x [:p]" {:ns 'esm-repl.app})] (is (string/includes? (str (:error r)) "#x needs cljf.jsx") (pr-str r)))))
+  (testing "a namespace without cljf.jsx (i.e. an editor's unsaved buffer) requires it for #x"
+    (is (= [(pr-str "p")] (:results (repl/cljs-eval "(.-type #x [:p])" {:ns 'esm-repl.app}))))))
 
 (deftest fails-visibly
   (testing "a form with warnings isn't evaluated, nor are the forms after it"

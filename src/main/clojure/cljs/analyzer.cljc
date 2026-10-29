@@ -3565,8 +3565,8 @@ x                          (not (contains? ret :info)))
 
 #?(:clj
    (def ^:private jsx-literals-cache
-     "jsx-literals? of source files, by path and modification time: a build
-     parses each namespace's ns form several times."
+     "jsx-literals? of source files, {path-or-url [modification-time v]}: a
+     build parses each namespace's ns form several times."
      (java.util.concurrent.ConcurrentHashMap.)))
 
 #?(:clj (declare jsx-literals?*))
@@ -3576,15 +3576,30 @@ x                          (not (contains? ret :info)))
      "Whether source file (a File, path or URL, *cljs-file*) has #x or #jsx
      literals (cljf.jsx/x), see jsx-literals?*."
      [file]
-     (let [f (io/file (str file))]
-       (if (.isFile f)
-         (let [k [(.getPath f) (.lastModified f)]]
-           (if-some [v (.get ^java.util.concurrent.ConcurrentHashMap jsx-literals-cache k)]
-             v
-             (let [v (boolean (jsx-literals?* f))]
-               (.put ^java.util.concurrent.ConcurrentHashMap jsx-literals-cache k v)
-               v)))
-         (boolean (jsx-literals?* file))))))
+     (try
+       (let [s     (str file)
+             f     (io/file s)
+             src   (cond
+                     (.isFile f) f
+                     (instance? URL file) file
+                     ;; cljs.closure's sources in jars, file:/x.jar!/my/ns.cljs
+                     (re-find #"^file:.*!/" s) (URL. (str "jar:" s))
+                     (re-find #"^(?:file|jar):" s) (URL. s))
+             cache ^java.util.concurrent.ConcurrentHashMap jsx-literals-cache]
+         (if (nil? src)
+           ;; not a source file, i.e. the REPL's <cljs repl>
+           false
+           ;; one entry per file, replaced when it changes
+           (let [k     (str src)
+                 mtime (util/last-modified src)
+                 [m v] (.get cache k)]
+             (if (and (some? v) (= m mtime))
+               v
+               (let [v (boolean (jsx-literals?* src))]
+                 (.put cache k [mtime v])
+                 v)))))
+       ;; never fails a build: a source it can't read has no #x literals
+       (catch Exception _ false))))
 
 #?(:clj
    (defn- jsx-literals?*

@@ -83,7 +83,7 @@ for (const template of TEMPLATES) {
       assert.match(viteConfig, /default: "'my-app\.core\/app"/);
       assert.match(viteConfig, /ssrEntries: \['server'\]/);
       assert.match(viteConfig, /jsxImportSource: 'hono\/jsx'/);
-      assert.match(source, /\(\.html c \(page\)\)/);
+      assert.match(source, /\(\.html c \(str "<!doctype html>" \(page\)\)\)/);
       assert.match(source, /\(def app\b/);
       assert.ok(!existsSync(path.join(root, 'index.html')));
     } else {
