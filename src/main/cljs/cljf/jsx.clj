@@ -228,7 +228,8 @@
                     {:form form})))
   (when-not (or (= 'cljf.jsx (get-in &env [:ns :name]))
                 (some #{'cljf.jsx} (vals (get-in &env [:ns :requires]))))
-    (throw (ex-info (str "#x needs cljf.jsx: (:require [cljf.jsx]) in the ns of "
+    (throw (ex-info (str "#x needs cljf.jsx, which a namespace whose source file has #x literals"
+                         " requires implicitly: (:require [cljf.jsx]) in the ns of "
                          (get-in &env [:ns :name]))
                     {:form form})))
   (element-form &env form))

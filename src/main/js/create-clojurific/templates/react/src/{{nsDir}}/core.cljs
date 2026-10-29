@@ -1,7 +1,6 @@
 (ns {{ns}}
   (:require ["react" :as react]
-            ["react-dom/client" :as rdc]
-            [cljf.jsx]))
+            ["react-dom/client" :as rdc]))
 
 ;; #x [...] is a React element: hiccup compiled to react/jsx-runtime calls,
 ;; props map literals to JavaScript objects

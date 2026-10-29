@@ -74,7 +74,6 @@ for (const template of TEMPLATES) {
     if (template === 'react') {
       assert.ok(pkg.dependencies.react);
       assert.doesNotMatch(deps, /reagent|uix/);
-      assert.match(source, /\[cljf\.jsx\]/);
       assert.match(source, /#x \[App\]/);
     }
     if (template === 'hono') {

@@ -346,12 +346,23 @@
         (is (= [{"out/a.js" [a1]} [a1]]
                (outstanding {"out/a.js" [a1]} {:files [] :warnings []} #{"out/a.js"})))))))
 
+(deftest jsx-literals-require-cljf-jsx-only-when-there-are-any
+  (let [dir (temp-dir)
+        ns-requires (fn [source]
+                      (let [f (io/file dir "t.cljs")]
+                        (spit f source)
+                        (set (:requires (ana/parse-ns f)))))]
+    (is (contains? (ns-requires "(ns t) (defn f [] #x [:p])") 'cljf.jsx))
+    (is (contains? (ns-requires "(ns t (:require [clojure.string :as s])) (def a #jsx [:p (s/trim \" \")])") 'cljf.jsx))
+    (testing "not for the tags in strings and comments, nor other tags"
+      (is (not (contains? (ns-requires "(ns t) ;; #x [:p]\n(def s \"#x [:p]\") (def u #uuid \"00000000-0000-0000-0000-000000000000\")") 'cljf.jsx))))))
+
 (deftest jsx-literals-call-the-jsx-runtime
   (let [dir     (temp-dir)
         ms      (- (System/currentTimeMillis) 60000)
         runtime (io/file dir "node_modules" "react" "jsx-runtime.js")
         sources (into {} [(write-source! dir 'test.jsx
-                            "(ns test.jsx (:require [cljf.jsx]))
+                            "(ns test.jsx)
                              (defn Item [^js p] #x [:li (.-label p)])
                              (defn view [{:keys [items extra style n]}]
                                #jsx [:<>
@@ -371,6 +382,8 @@
     (binding [esm/*generated-sources* sources]
       (esm/build {:main 'test.jsx :output-dir (str (io/file dir "out"))}))
     (let [out (output dir 'test.jsx)]
+      (testing "a namespace with #x literals requires cljf.jsx implicitly"
+        (is (string/includes? out "import * as cljf$jsx from \"../cljf/jsx.js\";")))
       (testing "literal props are JavaScript objects, with JavaScript names"
         (is (string/includes? out "{\"className\": \"a b\", \"onClick\": cljs$core.identity, \"data-x\": (1), \"style\": {\"fontSize\": (12), \"--gap\": \"1px\"}, \"id\": \"main\""))
         (is (string/includes? out "}, \"k\")")))

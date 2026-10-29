@@ -3563,6 +3563,75 @@ x                          (not (contains? ret :info)))
   #{:use :use-macros :require :require-macros
     :import :refer-global :require-global})
 
+#?(:clj
+   (def ^:private jsx-literals-cache
+     "jsx-literals? of source files, by path and modification time: a build
+     parses each namespace's ns form several times."
+     (java.util.concurrent.ConcurrentHashMap.)))
+
+#?(:clj (declare jsx-literals?*))
+
+#?(:clj
+   (defn- jsx-literals?
+     "Whether source file (a File, path or URL, *cljs-file*) has #x or #jsx
+     literals (cljf.jsx/x), see jsx-literals?*."
+     [file]
+     (let [f (io/file (str file))]
+       (if (.isFile f)
+         (let [k [(.getPath f) (.lastModified f)]]
+           (if-some [v (.get ^java.util.concurrent.ConcurrentHashMap jsx-literals-cache k)]
+             v
+             (let [v (boolean (jsx-literals?* f))]
+               (.put ^java.util.concurrent.ConcurrentHashMap jsx-literals-cache k v)
+               v)))
+         (boolean (jsx-literals?* file))))))
+
+#?(:clj
+   (defn- jsx-literals?*
+     "Whether file has #x or #jsx literals: read again for them when its text
+     has the tags, so that strings and comments mentioning them don't count."
+     [file]
+     (try
+       (let [src (slurp file)]
+         (when (re-find #"#(?:x|jsx)(?=[\s,\[])" src)
+           (let [found (volatile! false)
+                 tag   (fn [form] (vreset! found true) form)
+                 eof   (Object.)
+                 opts  (cond-> {:eof eof}
+                         (= "cljc" (util/ext (str file))) (assoc :read-cond :allow :features #{:cljs}))
+                 rdr   (readers/indexing-push-back-reader (PushbackReader. (java.io.StringReader. src)) 1 nil)]
+             (binding [*ns*                           (create-ns 'cljs.user)
+                       reader/*data-readers*          {'x tag 'jsx tag}
+                       reader/*default-data-reader-fn* (fn [_ form] form)
+                       reader/*read-eval*             false
+                       ;; ::alias/kw of aliases not known yet
+                       reader/*alias-map*             (fn [sym] sym)]
+               (loop []
+                 (when-not (or @found (identical? eof (reader/read opts rdr)))
+                   (recur))))
+             @found)))
+       ;; not a readable file, i.e. the REPL's <cljs repl>
+       (catch Throwable _ false))))
+
+#?(:clj
+   (defn- implicit-jsx-require
+     "The ns specs args of namespace name, requiring cljf.jsx when its source
+     has #x literals and they don't."
+     [name args opts]
+     (let [require? #(and (sequential? %) (= :require (first %)))]
+       (if (or (:macros-ns opts)
+               (= 'cljf.jsx name)
+               (nil? *cljs-file*)
+               (some (fn [spec]
+                       (and (require? spec)
+                            (some #(= 'cljf.jsx (if (sequential? %) (first %) %)) (rest spec))))
+                     args)
+               (not (jsx-literals? *cljs-file*)))
+         args
+         (if (some require? args)
+           (map #(if (require? %) (concat % ['cljf.jsx]) %) args)
+           (concat args [(list :require 'cljf.jsx)]))))))
+
 (defmethod parse 'ns
   [_ env [_ name & args :as form] _ opts]
   (when-not *allow-ns*
@@ -3589,7 +3658,8 @@ x                          (not (contains? ret :info)))
           metadata     (when (map? (first args)) (first args))
           args         (desugar-ns-specs
                          #?(:clj  (rewrite-cljs-aliases
-                                    (if metadata (next args) args))
+                                    ;; #x literals require cljf.jsx implicitly
+                                    (implicit-jsx-require name (if metadata (next args) args) opts))
                             :cljs (if (some? metadata) (next args) args)))
           {:keys [as-aliases] args :libspecs} (nses/elide-aliases-from-ns-specs args)
           name         (vary-meta name merge metadata)
