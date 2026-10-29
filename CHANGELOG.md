@@ -12,6 +12,7 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 ### Fixed
 
 - The REPL reported errors raised while macroexpanding (i.e. a macro's `ex-info`) without their message.
+- The watcher recompiles a batch of changed namespaces in dependency order, rather than in the order the changes were reported: a namespace using a var just added to one it requires, both changed at once (i.e. by a rebase or branch switch), no longer warns of an undeclared var, holding back hot reloads until it changes again.
 
 ## 0.12.12 [2026-10-28]
 

@@ -62,6 +62,28 @@
       (is (= #{"test_a.cljs" "test_b.cljs"} (build "(ns test.a) (defn f ([x] x) ([x y] y))" (+ after 1000))))
       (is (string/includes? (output dir 'test.b) "cljs$core$IFn$_invoke$arity$1(")))))
 
+(deftest watch-recompiles-in-dependency-order
+  (let [dir     (temp-dir)
+        ms      (- (System/currentTimeMillis) 60000)
+        a       (write-source! dir 'test.ra "(ns test.ra) (defn f [x] x)" ms)
+        b       (write-source! dir 'test.rb "(ns test.rb (:require [test.ra :as a])) (def y (a/f 1))" ms)
+        sources (into {} [a b])
+        opts    (#'esm/prepare-opts {:main 'test.rb :output-dir (str (io/file dir "out"))})
+        env     (env/default-compiler-env opts)]
+    (binding [esm/*generated-sources* sources]
+      (esm/build opts env)
+      (testing "a batch naming a dependent before the namespace whose new var it uses (i.e. after a rebase)"
+        (write-source! dir 'test.ra "(ns test.ra) (defn f [x] x) (defn g [x] x)" (+ ms 1000))
+        (write-source! dir 'test.rb "(ns test.rb (:require [test.ra :as a])) (def y (a/g 1))" (+ ms 1000))
+        (let [warnings (atom [])
+              inputs   (env/with-compiler-env env (esm/find-sources ['test.rb] opts))
+              done     (env/with-compiler-env env
+                         (binding [ana/*cljs-warning-handlers*
+                                   [(fn [type _ extra] (swap! warnings conj [type extra]))]]
+                           (#'esm/recompile! env inputs '[test.rb test.ra] opts)))]
+          (is (= '#{test.ra test.rb} done))
+          (is (empty? @warnings)))))))
+
 (deftest writes-closure-libraries-of-cached-namespaces
   (let [dir     (temp-dir)
         sources (into {} [(write-source! dir 'test.c "(ns test.c (:require [goog.string.format]))"

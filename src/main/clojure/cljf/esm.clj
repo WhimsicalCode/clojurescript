@@ -1212,19 +1212,26 @@
 
 (defn- recompile!
   "Recompiles namespaces nses (and their dependents if their API changed),
-  returns the namespaces compiled."
+  returns the namespaces compiled. Compiles them in the inputs' (dependency)
+  order, not nses': a batch of changes (i.e. a rebase) may name a namespace
+  before one it requires, which would be analyzed against the required
+  namespace's old api (warning of undeclared vars) and, compiled already,
+  not again once the required one's api changed."
   [compiler-env inputs nses opts]
-  (let [by-ns (into {} (map (juxt :ns identity)) inputs)]
-    (loop [queue (vec nses) done #{}]
-      (if-let [ns (first queue)]
-        (if (or (contains? done ns) (nil? (by-ns ns)))
-          (recur (subvec queue 1) done)
-          (let [before (api compiler-env ns)]
-            (compile-ns (by-ns ns) (assoc opts :force true))
-            (let [changed? (not= before (api compiler-env ns))]
-              (recur (cond-> (subvec queue 1)
-                       changed? (into (dependents compiler-env [ns])))
-                (conj done ns)))))
+  (let [by-ns (into {} (map (juxt :ns identity)) inputs)
+        index (into {} (map-indexed (fn [i {:keys [ns]}] [ns i])) inputs)
+        enqueue (fn [queue nses] (into queue (comp (filter index) (map (juxt index identity))) nses))]
+    (loop [queue (enqueue (sorted-set) nses) done #{}]
+      (if-let [[_ ns :as entry] (first queue)]
+        (let [queue (disj queue entry)]
+          (if (contains? done ns)
+            (recur queue done)
+            (let [before (api compiler-env ns)]
+              (compile-ns (by-ns ns) (assoc opts :force true))
+              (let [changed? (not= before (api compiler-env ns))]
+                (recur (cond-> queue
+                         changed? (enqueue (dependents compiler-env [ns])))
+                  (conj done ns))))))
         done))))
 
 (defn- resource-refs
