@@ -2697,6 +2697,14 @@
                                      (conj groups [k v])))
                            [] (partition 2 seq-exprs)))
              err (core/fn [& msg] (throw (ex-info (apply core/str msg) {})))
+             ;; in ES module output the iterator fns call themselves through a
+             ;; letfn local, not as named fn expressions, which tools such as
+             ;; React Compiler reject
+             esm? (= :esm (:module-format (cljs.analyzer/compiler-options)))
+             iter-fn (core/fn [giter params & body]
+                       (if esm?
+                         `(letfn* [~giter (fn ~params ~@body)] ~giter)
+                         `(fn ~giter ~params ~@body)))
              emit-bind (core/fn emit-bind [[[bind expr & mod-pairs]
                                        & [[_ next-expr] :as next-groups]]]
                          (core/let [giter (gensym "iter__")
@@ -2719,8 +2727,8 @@
                                                         (~giter (rest ~gxs)))))]
                            (if next-groups
                              #_ "not the inner-most loop"
-                             `(fn ~giter [~gxs]
-                                (lazy-seq
+                             (iter-fn giter [gxs]
+                               `(lazy-seq
                                   (loop [~gxs ~gxs]
                                     (when-first [~bind ~gxs]
                                       ~(do-mod mod-pairs)))))
@@ -2740,8 +2748,8 @@
                                                     :else
                                                     `(do (chunk-append ~gb ~body-expr)
                                                          (recur (unchecked-inc ~gi)))))]
-                               `(fn ~giter [~gxs]
-                                  (lazy-seq
+                               (iter-fn giter [gxs]
+                                 `(lazy-seq
                                     (loop [~gxs ~gxs]
                                       (when-let [~gxs (seq ~gxs)]
                                         (if (chunked-seq? ~gxs)

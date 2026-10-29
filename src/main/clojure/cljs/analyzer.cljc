@@ -2562,8 +2562,15 @@ x                          (not (contains? ret :info)))
         ;; the real pass
         [meth-env bes]
         (reduce (fn [[meth-env bes] {:keys [name shadow] :as be}]
-                  (let [env (assoc-in meth-env [:locals name] shadow)
-                        fexpr (analyze env (n->fexpr name))
+                  (let [fform (n->fexpr name)
+                        ;; a fn named after its binding (letfn's) refers to
+                        ;; itself by its own name, an anonymous one (for's
+                        ;; iterators in ES module output) through the binding
+                        self-named? (and (seq? fform) (symbol? (second fform)))
+                        env (if self-named?
+                              (assoc-in meth-env [:locals name] shadow)
+                              meth-env)
+                        fexpr (analyze env fform)
                         be' (assoc be
                               :init fexpr
                               :variadic? (:variadic? fexpr)

@@ -12,6 +12,7 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 ### Changed
 
 - ES module output declares the locals of functions with `const`, or `let` where they're assigned (loop locals, the locals hoisted from expressions, which are now declared at the start of the function, and `case` results), instead of `var`, and puts each `case` clause in a block. Tools such as React Compiler reject functions with `var`. Module level vars stay `var`; classic output is unchanged.
+- In ES module output, `for`'s iterator fns call themselves through a `letfn` local instead of being named function expressions, which React Compiler rejects. `letfn*` bindings of anonymous fns refer to themselves through the binding.
 
 ### Fixed
 
