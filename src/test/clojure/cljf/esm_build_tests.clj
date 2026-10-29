@@ -406,3 +406,60 @@
                         {"type" "p" "key" nil
                          "props" {"tabIndex" 2 "aria-label" "l" "title" "t" "style" {"zIndex" 1}}}]}}
              res)))))
+
+(defn- stub-jsx-runtime!
+  "A JSX runtime (src/jsx-runtime, src an import source: a package or a
+  package's subpath) in dir's node_modules, its elements naming src."
+  [^File dir src]
+  (let [[pkg-name sub] (string/split src #"/" 2)
+        pkg  (io/file dir "node_modules" pkg-name)
+        path (str (when sub (str sub "/")) "jsx-runtime.js")]
+    (io/make-parents (io/file pkg path))
+    (spit (io/file pkg path)
+      (str "const el = (type, props, key) => ({runtime: '" src "', type: typeof type === 'function' ? type.name : type, key: key ?? null, props});
+            export const jsx = el, jsxs = el, Fragment = '" src "-Fragment';"))
+    (spit (io/file pkg "package.json")
+      (str "{\"name\": \"" pkg-name "\", \"type\": \"module\", \"exports\": {\"./" (str (when sub (str sub "/")) "jsx-runtime") "\": \"./" path "\"}}"))))
+
+(defn- run-node [^File f]
+  (let [proc (.start (doto (ProcessBuilder. ["node" (str f)]) (.redirectErrorStream true)))
+        out  (slurp (.getInputStream proc))]
+    (.waitFor proc)
+    out))
+
+(deftest jsx-import-source-picks-the-jsx-runtime
+  (let [dir     (temp-dir)
+        ms      (- (System/currentTimeMillis) 60000)
+        sources (into {} [(write-source! dir 'test.jsxsrc
+                            "(ns test.jsxsrc (:require [test.jsxsrv :as srv]))
+                             (js/console.log (js/JSON.stringify #js [#x [:<> [:p]] (srv/page)]))"
+                            ms)
+                          (write-source! dir 'test.jsxsrv
+                            "(ns ^{:jsx-import-source \"hono/jsx\"} test.jsxsrv)
+                             (defn page [] #x [:<> [:h1 {:class \"t\"} \"Hi\"]])"
+                            ms)])]
+    (stub-jsx-runtime! dir "preact")
+    (stub-jsx-runtime! dir "hono/jsx")
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.jsxsrc :output-dir (str (io/file dir "out")) :jsx-import-source "preact"}))
+    (testing "the build's :jsx-import-source is cljf.jsx's runtime"
+      (is (string/includes? (slurp (io/file dir "out" "cljf" "jsx.js")) "from \"preact/jsx-runtime\"")))
+    (testing "a namespace's :jsx-import-source metadata imports its own"
+      (is (string/includes? (output dir 'test.jsxsrv) "from \"hono/jsx/jsx-runtime\"")))
+    (is (= [{"runtime" "preact" "type" "preact-Fragment" "key" nil
+             "props" {"children" {"runtime" "preact" "type" "p" "key" nil "props" {}}}}
+            {"runtime" "hono/jsx" "type" "hono/jsx-Fragment" "key" nil
+             "props" {"children" {"runtime" "hono/jsx" "type" "h1" "key" nil
+                                  "props" {"className" "t" "children" "Hi"}}}}]
+           (json/read-str (string/trim (run-node (io/file dir "out" "test" "jsxsrc.js"))))))))
+
+(deftest a-changed-jsx-import-source-recompiles
+  (let [dir     (temp-dir)
+        sources (into {} [(write-source! dir 'test.jsxchg "(ns test.jsxchg) (def e #x [:p])"
+                            (- (System/currentTimeMillis) 60000))])
+        build   #(binding [esm/*generated-sources* sources]
+                   (esm/build (merge {:main 'test.jsxchg :output-dir (str (io/file dir "out"))} %)))]
+    (build {})
+    (is (string/includes? (slurp (io/file dir "out" "cljf" "jsx.js")) "from \"react/jsx-runtime\""))
+    (build {:jsx-import-source "preact"})
+    (is (string/includes? (slurp (io/file dir "out" "cljf" "jsx.js")) "from \"preact/jsx-runtime\""))))

@@ -127,6 +127,7 @@ Options are EDN maps, `@file.edn` to read them from a file, and `:profile` keywo
 | `:extra-main` | namespaces added to `:main`, e.g. by the Vite plugin, the namespaces of the pages' `.cljs` scripts |
 | `:js-entries` | `{name {:exports {jsName my.ns/var}}}`, generated entry modules (`cljs-esm-entries/<name>.js`) exporting vars under JavaScript names, for libraries and workers; an undefined var fails the build |
 | `:preloads` | namespaces the main namespaces import first |
+| `:jsx-import-source` | the JSX runtime of [`#x` literals](#jsx-literals), `<source>/jsx-runtime`: `"preact"`, `"hono/jsx"`; default `"react"` |
 | `:parallel-build` | compiles namespaces in parallel once their dependencies are compiled |
 | `:npm-interop :shadow` | `["pkg" :as x]` binds CommonJS packages' `module.exports`, like shadow-cljs; needs the Vite plugin |
 | `:closure-defines {goog.DEBUG false}` | `goog.DEBUG` and `goog-define`s are compile time constants. `goog.DEBUG` is `false` in `:release` builds (the `:release` profile, and `build` without a profile), like shadow-cljs' release mode, unless `:closure-defines` sets it |
@@ -394,7 +395,14 @@ jsxs("div", {className: "counter", style: {fontSize: 14}, children: [jsxs("butto
 - Values the compiler can't see into are converted at runtime: `{:& props}` spreads `props` (a map converted once per map and cached, or a JavaScript object), with the map's other props overriding it, and a `:style` that isn't a literal is converted the same way. A `#js` literal, or a value tagged `^js`, isn't converted.
 - Children vectors are elements. Other forms are ClojureScript, whose elements need `#x` again, as in squint: `(for [i xs] #x [:li i])`. Strings, numbers, elements and JavaScript values are children as they are; other values are checked at runtime, sequences (of `for`, `map`) becoming arrays.
 - `:key` is the runtime's key argument, `[:<> ...]` a fragment, `[:div#id.a.b]` sets `id` and `className`, `[Component {...}]` passes the props object to a component, which reads it with `.-` (it's a JavaScript object).
-- A namespace whose source has `#x` literals requires `cljf.jsx` implicitly, which imports `react/jsx-runtime`: Preact's `preact/compat` and other runtimes with the same API are used through a bundler alias of `react/jsx-runtime`. A namespace only defined at the REPL requires it itself.
+- A namespace whose source has `#x` literals requires `cljf.jsx` implicitly. A namespace only defined at the REPL requires it itself.
+- The elements are the JSX runtime's of `:jsx-import-source`, as TypeScript's `jsxImportSource`: `<source>/jsx-runtime`, `react/jsx-runtime` by default. Preact (`"preact"`), Hono (`"hono/jsx"`, which `c.html` renders on the server) and other runtimes exporting `jsx`, `jsxs` and `Fragment` work the same way. A namespace's metadata overrides it, i.e. a server's pages in a build of a React app:
+
+  ```clojure
+  (ns ^{:jsx-import-source "hono/jsx"} my.server)
+  ```
+
+  Props get React's names (`className`, `htmlFor`), which Preact and Hono accept too.
 - Source maps point the elements, their props and children to their place in the literal.
 
 ### `^:export`

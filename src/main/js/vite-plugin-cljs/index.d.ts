@@ -26,6 +26,8 @@ export interface CompilerOptions {
   extraMain?: CljSymbol[];
   /** Generated entry modules exporting vars under JavaScript names: `{ server: { exports: { default: "'my.server/app" } } }`. */
   jsEntries?: { [name: string]: { exports: { [jsName: string]: CljSymbol } } };
+  /** The JSX runtime of `#x` literals, `<source>/jsx-runtime`: `'preact'`, `'hono/jsx'`. Default `'react'`. A namespace's `:jsx-import-source` metadata overrides it. */
+  jsxImportSource?: string;
   /** Namespaces the main namespaces import first. */
   preloads?: CljSymbol[];
   /** Compile namespaces in parallel once their dependencies are compiled. */

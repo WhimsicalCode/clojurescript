@@ -7,15 +7,15 @@
 ;   You must not remove this notice, or any other, from this software.
 
 (ns cljf.jsx
-  "#x (or #jsx) literals' runtime: the JSX runtime (react/jsx-runtime, a
-  bundler alias picks another, i.e. preact/jsx-runtime) and the conversions
-  of the values the compiler can't see into, see cljf.jsx/x."
-  (:require ["react/jsx-runtime" :as rt])
+  "#x (or #jsx) literals' runtime: the JSX runtime, and the conversions of
+  the values the compiler can't see into, see cljf.jsx/x. The compiler
+  requires the runtime of the build's :jsx-import-source (default react,
+  react/jsx-runtime) as cljf-jsx-runtime."
   (:require-macros [cljf.jsx]))
 
-(def jsx rt/jsx)
-(def jsxs rt/jsxs)
-(def Fragment rt/Fragment)
+(def jsx cljf-jsx-runtime/jsx)
+(def jsxs cljf-jsx-runtime/jsxs)
+(def Fragment cljf-jsx-runtime/Fragment)
 
 (defn- camel [s]
   (.replace s (js/RegExp. "-([a-z])" "g") (fn [_ c] (.toUpperCase c))))

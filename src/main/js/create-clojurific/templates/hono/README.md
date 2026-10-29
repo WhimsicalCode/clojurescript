@@ -15,7 +15,8 @@ The app is `src/{{nsDir}}/core.cljs`. It's compiled as a `:js-entries` module
 exporting the app (see `vite.config.ts`), which
 [`@hono/vite-dev-server`](https://github.com/honojs/vite-plugins) serves and
 `@hono/vite-build` bundles. Changed namespaces are hot reloaded in place:
-`defonce` keeps its value.
+`defonce` keeps its value. Its page is an `#x` literal, an element of Hono's
+JSX (`jsxImportSource: 'hono/jsx'` in `vite.config.ts`).
 
 ClojureScript dependencies go in `deps.edn`, npm packages in `package.json`.
 The compiler needs Java 17 or later: `npx cljf setup-java` downloads one.

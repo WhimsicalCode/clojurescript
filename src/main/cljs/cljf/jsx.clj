@@ -89,6 +89,12 @@
               (or (= 'cljf.jsx/x h)
                   (and (= 'x h) (= 'cljf.jsx (get-in env [:ns :use-macros 'x]))))))))
 
+(def ^:private ^:dynamic *runtime*
+  "The namespace (or alias) of the JSX runtime's jsx, jsxs and Fragment."
+  'cljf.jsx)
+
+(defn- rt [sym] (symbol (str *runtime*) (str sym)))
+
 (declare element)
 
 (defn- element-vector?
@@ -155,7 +161,7 @@
   "[type id classes] of an element's tag, :div.a.b#id's [\"div\" \"id\" [\"a\" \"b\"]]."
   [t]
   (cond
-    (= :<> t) ['cljf.jsx/Fragment nil nil]
+    (= :<> t) [(rt 'Fragment) nil nil]
 
     (keyword? t)
     (let [n     (name t)
@@ -195,7 +201,7 @@
       (throw (ex-info (str "#x elements are [:tag ...] or [Component ...], not " (pr-str form))
                       {:form form})))
     [(str "~{}(~{}, " pt (when key? ", ~{}") ")")
-     (vec (concat [(if (< 1 (count children)) 'cljf.jsx/jsxs 'cljf.jsx/jsx) type]
+     (vec (concat [(rt (if (< 1 (count children)) 'jsxs 'jsx)) type]
                   pargs
                   (when key? [(:key props)])))]))
 
@@ -232,4 +238,6 @@
                          " requires implicitly: (:require [cljf.jsx]) in the ns of "
                          (get-in &env [:ns :name]))
                     {:form form})))
-  (element-form &env form))
+  ;; a namespace's own :jsx-import-source, see cljs.analyzer/implicit-jsx-require
+  (binding [*runtime* (if (get-in &env [:ns :requires 'cljf-jsx-runtime]) 'cljf-jsx-runtime 'cljf.jsx)]
+    (element-form &env form)))

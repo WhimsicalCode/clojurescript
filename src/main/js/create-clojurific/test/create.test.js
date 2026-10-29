@@ -82,6 +82,8 @@ for (const template of TEMPLATES) {
       // the app is a :js-entries export the dev server runs, no pages
       assert.match(viteConfig, /default: "'my-app\.core\/app"/);
       assert.match(viteConfig, /ssrEntries: \['server'\]/);
+      assert.match(viteConfig, /jsxImportSource: 'hono\/jsx'/);
+      assert.match(source, /\(\.html c \(page\)\)/);
       assert.match(source, /\(def app\b/);
       assert.ok(!existsSync(path.join(root, 'index.html')));
     } else {

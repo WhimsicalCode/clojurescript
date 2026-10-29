@@ -12,6 +12,8 @@ export default defineConfig({
       outputDir: 'target/cljs',
       compilerOptions: {
         jsEntries: { server: { exports: { default: "'{{ns}}/app" } } },
+        // #x literals are elements of Hono's JSX
+        jsxImportSource: 'hono/jsx',
         // the dev server starts an nREPL server, its port in .nrepl-port, with
         // cider-nrepl's middleware: completion and lookup
         repl: { nreplPort: 0, middleware: ["'cider.nrepl/cider-middleware"] },
