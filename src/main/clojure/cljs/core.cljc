@@ -2697,12 +2697,15 @@
                                      (conj groups [k v])))
                            [] (partition 2 seq-exprs)))
              err (core/fn [& msg] (throw (ex-info (apply core/str msg) {})))
-             ;; in ES module output the iterator fns call themselves through a
-             ;; letfn local, not as named fn expressions, which tools such as
-             ;; React Compiler reject
-             esm? (= :esm (:module-format (cljs.analyzer/compiler-options)))
+             ;; in ^:memo fns (React Compiler's, in ES module output) the
+             ;; iterator fns call themselves through a letfn local, not as
+             ;; named fn expressions, which React Compiler rejects. The letfn
+             ;; is an IIFE, which it caches the seq apart in (unlike hoisted
+             ;; locals): elsewhere the named fn expressions, without one
+             memo? (core/and (:memo &env)
+                             (= :esm (:module-format (cljs.analyzer/compiler-options))))
              iter-fn (core/fn [giter params & body]
-                       (if esm?
+                       (if memo?
                          `(letfn* [~giter (fn ~params ~@body)] ~giter)
                          `(fn ~giter ~params ~@body)))
              emit-bind (core/fn emit-bind [[[bind expr & mod-pairs]

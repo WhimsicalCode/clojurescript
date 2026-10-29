@@ -2447,6 +2447,11 @@ x                          (not (contains? ret :info)))
                (:async (meta name))
                (:async (meta (first form))))
         env (assoc env :async async)
+        ;; ^:memo fns (defn ^:memo App [] ...) are compiled by React Compiler:
+        ;; macros (for) emit code it accepts in them, and the fns in them
+        env          (cond-> env
+                       (or (:memo (meta name)) (:memo (meta (first form))))
+                       (assoc :memo true))
         env          (if (some? name)
                        (update-in env [:fn-scope] conj name-var)
                        env)

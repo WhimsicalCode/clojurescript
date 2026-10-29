@@ -538,6 +538,7 @@
       (testing "hiccup and maps outside #x fail clearly"
         (is (string/starts-with? (get r "hiccup-child") "A hiccup vector isn't a #x child"))
         (is (string/starts-with? (get r "map-child") "A map isn't a #x child"))))))
+
 (deftest functions-declare-their-locals-with-const-and-let
   (let [dir     (temp-dir)
         sources (into {} [(write-source! dir 'test.decl
@@ -571,6 +572,27 @@
     (is (= "[3 :other 3 [0 3 6] 2 1] 1 6\n"
            (run-node (io/file dir "out" "test" "decl.js"))))))
 
+(deftest for-iterators-call-themselves-through-a-local
+  (let [dir     (temp-dir)
+        sources (into {} [(write-source! dir 'test.forit
+                            "(ns test.forit)
+                             (defn ^:memo f [n]
+                               (let [xs (for [i (range n) :let [j (* i 2)] :when (odd? i) k (range i) :while (< k 2)] [i j k])]
+                                 (vec xs)))
+                             (defn ^:memo g [] (loop [i 0 acc []] (if (< i 2) (recur (inc i) (conj acc (vec (for [x (range 3)] (+ x i))))) acc)))
+                             (defn h [n] (vec (for [x (range n)] (* x x))))
+                             (js/console.log (pr-str (f 6) (g) (h 3) (take 3 (for [x (range)] x))))"
+                            (- (System/currentTimeMillis) 60000))])]
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.forit :output-dir (str (io/file dir "out"))}))
+    (let [out (output dir 'test.forit)]
+      (testing "in ^:memo fns no named function expressions: React Compiler rejects their self calls"
+        (is (not (re-find #"function test\$forit\$(f|g)[\w$]*iter__" out))))
+      (testing "elsewhere named function expressions, without an IIFE"
+        (is (re-find #"function test\$forit\$h_\$_iter__" out))))
+    (is (= "[[1 2 0] [3 6 0] [3 6 1] [5 10 0] [5 10 1]] [[0 1 2] [1 2 3]] [0 1 4] (0 1 2)\n"
+           (run-node (io/file dir "out" "test" "forit.js"))))))
+
 (deftest letfn-and-var-args-locals-are-declared-once
   (let [dir     (temp-dir)
         sources (into {} [(write-source! dir 'test.decl2
@@ -589,19 +611,3 @@
     (binding [esm/*generated-sources* sources]
       (esm/build {:main 'test.decl2 :output-dir (str (io/file dir "out"))}))
     (is (= "2 2 [1 2] true (2 3) (2 3) 1\n" (run-node (io/file dir "out" "test" "decl2.js"))))))
-(deftest for-iterators-call-themselves-through-a-local
-  (let [dir     (temp-dir)
-        sources (into {} [(write-source! dir 'test.forit
-                            "(ns test.forit)
-                             (defn f [n]
-                               (let [xs (for [i (range n) :let [j (* i 2)] :when (odd? i) k (range i) :while (< k 2)] [i j k])]
-                                 (vec xs)))
-                             (defn g [] (loop [i 0 acc []] (if (< i 2) (recur (inc i) (conj acc (vec (for [x (range 3)] (+ x i))))) acc)))
-                             (js/console.log (pr-str (f 6) (g) (take 3 (for [x (range)] x))))"
-                            (- (System/currentTimeMillis) 60000))])]
-    (binding [esm/*generated-sources* sources]
-      (esm/build {:main 'test.forit :output-dir (str (io/file dir "out"))}))
-    (testing "no named function expressions: React Compiler rejects their self calls"
-      (is (not (re-find #"function test\$forit\$[\w$]*iter__" (output dir 'test.forit)))))
-    (is (= "[[1 2 0] [3 6 0] [3 6 1] [5 10 0] [5 10 1]] [[0 1 2] [1 2 3]] (0 1 2)\n"
-           (run-node (io/file dir "out" "test" "forit.js"))))))
