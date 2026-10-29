@@ -1106,8 +1106,12 @@
 (core/defmacro unsafe-cast
   "EXPERIMENTAL: Subject to change. Unsafely cast a value to a different type."
   [t x]
-  (core/let [cast-expr (core/str "~{} = /** @type {" t "} */ (~{})")]
-    (core/list 'js* cast-expr x x)))
+  (if (= :esm (:module-format (cljs.analyzer/compiler-options)))
+    ;; only a Closure type annotation, which ES module output has no use for;
+    ;; the assignment would fail on a const local
+    x
+    (core/let [cast-expr (core/str "~{} = /** @type {" t "} */ (~{})")]
+      (core/list 'js* cast-expr x x))))
 
 (core/defmacro js-inline-comment
   "Emit an inline JavaScript comment."

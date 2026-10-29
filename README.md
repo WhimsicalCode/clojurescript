@@ -446,7 +446,7 @@ On the Whimsical app's performance suite (rendering, layout, text editing, synta
 
 The main changes, in ES module output (see [`CHANGELOG.md`](CHANGELOG.md) for all of them):
 
-- `let` and `do` in expression position are comma expressions with hoisted `var`s instead of IIFEs. The app's output had about 14,000 IIFEs (shadow-cljs's about 70), which caused most of the original gap and extra garbage collection.
+- `let` and `do` in expression position are comma expressions with locals hoisted to the start of the function instead of IIFEs. The app's output had about 14,000 IIFEs (shadow-cljs's about 70), which caused most of the original gap and extra garbage collection.
 - Call site dispatch: `get`, keyword invokes, `nth`, `seq` / `first` / `next`, `count`, `=`, `empty?`, `not-empty`, `vector?`, `map?` and map destructuring of a local call the protocol method at the call site when the value has it, instead of going through one megamorphic shared dispatcher. Anything else goes through the function as before.
 - Array map lookups of a keyword first check the index the keyword was last found at, before scanning the keys (about 4%).
 - `cljs.core` fast paths: keyword and string paths in `hash`, `=`, `str` and `compare`, a one-entry cache in multimethods, fixed arities of `merge` and `assoc`, and vector walks by index in `some`, `every?`, `get-in`, `last` and `second`.

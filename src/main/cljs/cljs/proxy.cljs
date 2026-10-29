@@ -55,7 +55,6 @@
   ([key-fn]
    (builder keyword write-through))
   ([key-fn cache-fn]
-   (js* "var __ctor")
    (let [cache-key-fn (cache-fn key-fn)
          vec-handler  #js {:get (fn [^cljs.core/IIndexed target prop receiver]
                                   (cond
