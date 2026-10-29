@@ -570,3 +570,22 @@
         (is (re-find #"case \(2\):\n\{" out))))
     (is (= "[3 :other 3 [0 3 6] 2 1] 1 6\n"
            (run-node (io/file dir "out" "test" "decl.js"))))))
+
+(deftest letfn-and-var-args-locals-are-declared-once
+  (let [dir     (temp-dir)
+        sources (into {} [(write-source! dir 'test.decl2
+                            "(ns test.decl2)
+                             (defn f1 [x] (letfn [(h [] 1)] (h)) (letfn [(h [] (if (pos? x) 2 (h)))] (h)))
+                             (letfn [(top [] 1)] (top))
+                             (letfn [(top [] 2)] (def t (top)))
+                             (defn f3 [] (let [a (letfn [(x [] 1)] (x)) x 2] [a x]))
+                             (defn f4 [n] (letfn [(ev? [n] (if (zero? n) true (od? (dec n))))
+                                                  (od? [n] (if (zero? n) false (ev? (dec n))))]
+                                            (ev? n)))
+                             (def f (fn [a & var_args] var_args))
+                             (def g (fn ([a] a) ([a & var_args] var_args)))
+                             (js/console.log (pr-str (f1 1) t (f3) (f4 4) (f 1 2 3) (g 1 2 3) (g 1)))"
+                            (- (System/currentTimeMillis) 60000))])]
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.decl2 :output-dir (str (io/file dir "out"))}))
+    (is (= "2 2 [1 2] true (2 3) (2 3) 1\n" (run-node (io/file dir "out" "test" "decl2.js"))))))

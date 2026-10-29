@@ -1373,7 +1373,9 @@
       (when type
         (emit-self (if variadic (concat (butlast params) ['var_args]) params)))
       (when variadic
-        (emits (decl "let "))
+        ;; a rest param named var_args is the wrapper's own param
+        (when-not (= "var_args" (str (munge (last params))))
+          (emits (decl "let ")))
         (emit (last params))
         (emitln " = null;")
         (emitln "if (arguments.length > " (dec (count params)) ") {")
@@ -1474,7 +1476,7 @@
                   (comma-sep (if variadic
                                (concat (butlast maxparams) ['var_args])
                                maxparams)) "){")
-          (when variadic
+          (when (and variadic (not= "var_args" (str (munge (last maxparams)))))
             (emits (decl "const "))
             (emit (last maxparams))
             (emitln " = var_args;"))
@@ -1739,9 +1741,17 @@
   [{expr :body :keys [bindings env]}]
   (let [context (:context env)]
     (when (= :expr context) (emits (iife-open env)))
-    (doseq [{:keys [init] :as binding} bindings]
-      (emitln (decl "const ") (munge binding) " = " init ";"))
-    (emits expr)
+    ;; outside an IIFE renamed apart from the scope's other locals, as let's
+    ;; bindings are (see emit-let-scope): a const can't be declared twice
+    (binding [*lexical-renames*
+              (into *lexical-renames*
+                (when (and *esm-emitting* (not= :expr context))
+                  (map (fn [binding]
+                         [(hash-scope binding) (gensym (str (:name binding) "-"))])
+                       bindings)))]
+      (doseq [{:keys [init] :as binding} bindings]
+        (emitln (decl "const ") (munge binding) " = " init ";"))
+      (emits expr))
     (when (= :expr context) (emits (iife-close env)))))
 
 (defn protocol-prefix [psym]
