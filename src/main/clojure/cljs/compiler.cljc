@@ -1300,30 +1300,64 @@
     (emitln "break;")
     (emitln "}")))
 
+#?(:clj
+   (def ^:private ^:dynamic *fn-decls*
+     "While an outermost fn's body is written to a buffer in ES module output,
+     an atom of the declarations of the hoisted locals of the fns in it, {n
+     declaration}, see emit-fn-body."
+     nil))
+
+#?(:clj
+   (defn- fill-fn-decls
+     "s with the placeholders of emit-fn-body (\\u0000n\\u0000) replaced by
+     the declarations of decls, {n declaration}."
+     ^String [^String s decls]
+     (if (empty? decls)
+       s
+       (let [sb (StringBuilder. (+ (.length s) 64))]
+         (loop [from 0]
+           (let [i (.indexOf s (int 0) (int from))]
+             (if (neg? i)
+               (.toString (.append sb s from (.length s)))
+               (let [j (.indexOf s (int 0) (int (inc i)))]
+                 (.append sb s from i)
+                 (.append sb ^String (or (get decls (Long/parseLong (subs s (inc i) j))) ""))
+                 (recur (inc j))))))))))
+
 (defn emit-fn-body
   "Emits the body of a fn method, after its opening brace (on its line),
   declaring the locals its lets in expression position hoisted (see emit-let):
-  at its end with var, or in ES module output at its start with let (on the
-  opening brace's line, after which the source map has no entries), the body
-  written to a buffer until they're known. type: this is self__."
-  ([expr recurs] (emit-fn-body expr recurs nil nil))
-  ([expr recurs type params]
-   (binding [*hoisted-locals* (atom [])]
-     (if #?(:clj *esm-emitting* :cljs false)
-       #?(:clj
-          (let [body (java.io.StringWriter.)]
-            (binding [*out* body]
-              (emitln)
-              (emit-fn-body* expr recurs type params))
-            (when-let [locals (seq @*hoisted-locals*)]
-              (.write ^Writer *out* (str "let " (string/join ", " locals) ";")))
-            (.write ^Writer *out* (str body)))
-          :cljs nil)
-       (do
-         (emitln)
-         (emit-fn-body* expr recurs type params)
-         (when-let [locals (seq @*hoisted-locals*)]
-           (emitln "var " (comma-sep locals) ";")))))))
+  at its end with var, or in ES module output at its start with let, on the
+  opening brace's line (after which the source map has no entries). The
+  declaration isn't known until the body is emitted: the outermost fn's body
+  is written to a buffer, the fns in it write a placeholder their declaration
+  replaces once the outermost's is emitted. type: this is self__."
+  [expr recurs type params]
+  (binding [*hoisted-locals* (atom [])]
+    (if #?(:clj *esm-emitting* :cljs false)
+      #?(:clj
+         (let [decl-str #(when-let [locals (seq %)] (str "let " (string/join ", " locals) ";"))]
+           (if-let [decls *fn-decls*]
+             (let [n (count @decls)]
+               (swap! decls assoc n nil)
+               (.write ^Writer *out* (str (char 0) n (char 0)))
+               (emitln)
+               (emit-fn-body* expr recurs type params)
+               (swap! decls assoc n (decl-str @*hoisted-locals*)))
+             (let [body  (java.io.StringWriter.)
+                   decls (atom {})]
+               (binding [*out* body *fn-decls* decls]
+                 (emitln)
+                 (emit-fn-body* expr recurs type params))
+               (when-let [d (decl-str @*hoisted-locals*)]
+                 (.write ^Writer *out* ^String d))
+               (.write ^Writer *out* (fill-fn-decls (str body) @decls)))))
+         :cljs nil)
+      (do
+        (emitln)
+        (emit-fn-body* expr recurs type params)
+        (when-let [locals (seq @*hoisted-locals*)]
+          (emitln "var " (comma-sep locals) ";"))))))
 
 (defn emit-fn-method
   [{expr :body :keys [type name params env recurs]}]
