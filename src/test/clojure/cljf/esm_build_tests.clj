@@ -431,14 +431,15 @@
 
 (defn- stub-jsx-runtime!
   "A JSX runtime (src/jsx-runtime, src an import source: a package or a
-  package's subpath) in dir's node_modules, its elements naming src."
+  package's subpath) in dir's node_modules, its elements naming src, keys
+  as React's: none when undefined, else strings (null as \"null\")."
   [^File dir src]
   (let [[pkg-name sub] (string/split src #"/" 2)
         pkg  (io/file dir "node_modules" pkg-name)
         path (str (when sub (str sub "/")) "jsx-runtime.js")]
     (io/make-parents (io/file pkg path))
     (spit (io/file pkg path)
-      (str "const el = (type, props, key) => ({runtime: '" src "', type: typeof type === 'function' ? type.name : type, key: key ?? null, props});
+      (str "const el = (type, props, key) => ({runtime: '" src "', type: typeof type === 'function' ? type.name : type, key: key === undefined ? null : '' + key, props});
             export const jsx = el, jsxs = el, Fragment = '" src "-Fragment';"))
     (spit (io/file pkg "package.json")
       (str "{\"name\": \"" pkg-name "\", \"type\": \"module\", \"exports\": {\"./" (str (when sub (str sub "/")) "jsx-runtime") "\": \"./" path "\"}}"))))
@@ -499,6 +500,8 @@
                                       :literal-key    (k #x [:li {:key :a}])
                                       :nested-key     (k #x [:li {:& {:key \"n\" :title \"t\"}}])
                                       :spread-key     (k #x [:li {:& m}])
+                                      :spread-nil     (k #x [:li {:& (:attrs {})}])
+                                      :spread-js      (k #x [:li {:& (js-obj \"title\" \"t\")}])
                                       :spread-props   (props #x [:li {:& m}])
                                       :outer-key-wins (k #x [:li {:& m :key \"o\"}])
                                       :class-vector   (.-className (props #x [:div.a {:class [\"b\" (when on? \"c\") nil]}]))
@@ -520,6 +523,9 @@
       (testing "the :key of maps spread, literal or at runtime, is the key argument, not a prop"
         (is (= "n" (get r "nested-key")))
         (is (= "m" (get r "spread-key")))
+        (testing "(nil or a JavaScript object spread is no key, not React's \"null\")"
+          (is (nil? (get r "spread-nil")))
+          (is (nil? (get r "spread-js"))))
         (is (= {"tabIndex" 1 "className" "p q"} (get r "spread-props")))
         (is (= "o" (get r "outer-key-wins"))))
       (testing ":class collections are joined, keyword values are their names"

@@ -98,11 +98,13 @@
 
 (defn spread-key
   "The :key of a map spread at runtime ({:& m}), the element's key argument:
-  undefined without one."
+  undefined without one, and for anything else spread (nil, a JavaScript
+  object): React keys null as \"null\"."
   [p]
-  (when (map? p)
+  (if (map? p)
     (let [k (get p :key)]
-      (if (nil? k) js/undefined k))))
+      (if (nil? k) js/undefined k))
+    js/undefined))
 
 (defn child
   "A child the compiler can't see into: sequences (i.e. of for) and vectors
