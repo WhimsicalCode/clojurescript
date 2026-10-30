@@ -1006,6 +1006,13 @@
           (emitln then "} else {")
           (emitln else "}"))))))
 
+(defn- decl
+  "The keyword declaring a local: kind (\"const \" or \"let \") in ES module
+  output, where locals are block scoped (and tools such as React Compiler don't
+  take var), var otherwise."
+  [kind]
+  (if *esm-emitting* kind "var "))
+
 (defn iife-open [{:keys [async]}]
   (str (when async "(await ") "(" (when async "async ") "function (){"))
 
@@ -1018,20 +1025,26 @@
     (emitln (iife-open env)))
   (let [gs (gensym "caseval__")]
     (when (= :expr (:context env))
-      (emitln "var " gs ";"))
+      (emitln (decl "let ") gs ";"))
     (emitln "switch (" v ") {")
+    ;; a block per clause in ES module output: the clauses of a switch share
+    ;; its scope, where their const locals would clash
     (doseq [{ts :tests {:keys [then]} :then} nodes]
       (doseq [test (map :test ts)]
         (emitln "case " test ":"))
+      (when *esm-emitting* (emitln "{"))
       (if (= :expr (:context env))
         (emitln gs "=" then)
         (emitln then))
+      (when *esm-emitting* (emitln "}"))
       (emitln "break;"))
     (when default
       (emitln "default:")
+      (when *esm-emitting* (emitln "{"))
       (if (= :expr (:context env))
         (emitln gs "=" default)
-        (emitln default)))
+        (emitln default))
+      (when *esm-emitting* (emitln "}")))
     (emitln "}")
     (when (= :expr (:context env))
       (emitln "return " gs ";"
@@ -1232,17 +1245,17 @@
         delegate-name (str (munge name) "__delegate")]
     (emitln "(function (" arglist "){")
     (doseq [[i param] (map-indexed vector (drop-last 2 params))]
-      (emits "var ")
+      (emits (decl "const "))
       (emit param)
       (emits (cc " = cljs.core.first("))
       (emitln arglist ");")
       (emitln arglist (cc " = cljs.core.next(") arglist ");"))
     (if (< 1 (count params))
       (do
-        (emits "var ")
+        (emits (decl "const "))
         (emit (last (butlast params)))
         (emitln (cc " = cljs.core.first(") arglist ");")
-        (emits "var ")
+        (emits (decl "const "))
         (emit (last params))
         (emitln (cc " = cljs.core.rest(") arglist ");")
         (emits "return " delegate-name "(")
@@ -1251,7 +1264,7 @@
           (when-not (= param (last params)) (emits ",")))
         (emitln ");"))
       (do
-        (emits "var ")
+        (emits (decl "const "))
         (emit (last params))
         (emitln (cc " = cljs.core.seq(") arglist ");")
         (emits "return " delegate-name "(")
@@ -1268,18 +1281,83 @@
     (when-not (= param (last params))
       (emits ","))))
 
+(defn- emit-self
+  "this as self__, in the methods of types. A param of that name (the IFn
+  methods of multi-arity fns, see emit* :fn) is assigned: var redeclared it,
+  const can't."
+  [params]
+  (if (some #(= "self__" (str (munge %))) params)
+    (emitln "self__ = this;")
+    (emitln (decl "const ") "self__ = this;")))
+
+(defn- emit-fn-body*
+  [expr recurs type params]
+  (when type
+    (emit-self params))
+  (when recurs (emitln "while(true){"))
+  (emits expr)
+  (when recurs
+    (emitln "break;")
+    (emitln "}")))
+
+#?(:clj
+   (def ^:private ^:dynamic *fn-decls*
+     "While an outermost fn's body is written to a buffer in ES module output,
+     an atom of the declarations of the hoisted locals of the fns in it, {n
+     declaration}, see emit-fn-body."
+     nil))
+
+#?(:clj
+   (defn- fill-fn-decls
+     "s with the placeholders of emit-fn-body (\\u0000n\\u0000) replaced by
+     the declarations of decls, {n declaration}."
+     ^String [^String s decls]
+     (if (empty? decls)
+       s
+       (let [sb (StringBuilder. (+ (.length s) 64))]
+         (loop [from 0]
+           (let [i (.indexOf s (int 0) (int from))]
+             (if (neg? i)
+               (.toString (.append sb s from (.length s)))
+               (let [j (.indexOf s (int 0) (int (inc i)))]
+                 (.append sb s from i)
+                 (.append sb ^String (or (get decls (Long/parseLong (subs s (inc i) j))) ""))
+                 (recur (inc j))))))))))
+
 (defn emit-fn-body
-  "Emits the body of a fn method, declaring the locals its lets in expression
-  position hoisted (see emit-let) at its end."
-  [expr recurs]
+  "Emits the body of a fn method, after its opening brace (on its line),
+  declaring the locals its lets in expression position hoisted (see emit-let):
+  at its end with var, or in ES module output at its start with let, on the
+  opening brace's line (after which the source map has no entries). The
+  declaration isn't known until the body is emitted: the outermost fn's body
+  is written to a buffer, the fns in it write a placeholder their declaration
+  replaces once the outermost's is emitted. type: this is self__."
+  [expr recurs type params]
   (binding [*hoisted-locals* (atom [])]
-    (when recurs (emitln "while(true){"))
-    (emits expr)
-    (when recurs
-      (emitln "break;")
-      (emitln "}"))
-    (when-let [locals (seq @*hoisted-locals*)]
-      (emitln "var " (comma-sep locals) ";"))))
+    (if #?(:clj *esm-emitting* :cljs false)
+      #?(:clj
+         (let [decl-str #(when-let [locals (seq %)] (str "let " (string/join ", " locals) ";"))]
+           (if-let [decls *fn-decls*]
+             (let [n (count @decls)]
+               (swap! decls assoc n nil)
+               (.write ^Writer *out* (str (char 0) n (char 0)))
+               (emitln)
+               (emit-fn-body* expr recurs type params)
+               (swap! decls assoc n (decl-str @*hoisted-locals*)))
+             (let [body  (java.io.StringWriter.)
+                   decls (atom {})]
+               (binding [*out* body *fn-decls* decls]
+                 (emitln)
+                 (emit-fn-body* expr recurs type params))
+               (when-let [d (decl-str @*hoisted-locals*)]
+                 (.write ^Writer *out* ^String d))
+               (.write ^Writer *out* (fill-fn-decls (str body) @decls)))))
+         :cljs nil)
+      (do
+        (emitln)
+        (emit-fn-body* expr recurs type params)
+        (when-let [locals (seq @*hoisted-locals*)]
+          (emitln "var " (comma-sep locals) ";"))))))
 
 (defn emit-fn-method
   [{expr :body :keys [type name params env recurs]}]
@@ -1287,10 +1365,8 @@
     (emit-wrap env
                (emits "(" (when async "async ") "function " (munge name) "(")
                (emit-fn-params params)
-               (emitln "){")
-               (when type
-                 (emitln "var self__ = this;"))
-               (emit-fn-body expr recurs)
+               (emits "){")
+               (emit-fn-body expr recurs type params)
                (emits "})"))))
 
 (defn emit-arguments-to-array
@@ -1301,7 +1377,7 @@
   (let [mname (munge (gensym))
         i (str mname "__i")
         a (str mname "__a")]
-    (emitln "var " i " = 0, "
+    (emitln (decl "let ") i " = 0, "
                    a " = new Array(arguments.length -  " startslice ");")
     (emitln "while (" i " < " a ".length) {"
       a "[" i "] = arguments[" i " + " startslice "]; ++" i ";}")
@@ -1315,25 +1391,25 @@
           delegate-name (str mname "__delegate")
           async (:async env)]
       (emitln (when *esm-emitting* "/*@__PURE__*/") "(function() { ")
-      (emits "var " delegate-name " = " (when async "async ") "function (")
+      (emits (decl "const ") delegate-name " = " (when async "async ") "function (")
       (doseq [param params]
         (emit param)
         (when-not (= param (last params)) (emits ",")))
-      (emitln "){")
-      (when type
-        (emitln "var self__ = this;"))
-      (emit-fn-body expr recurs)
+      (emits "){")
+      (emit-fn-body expr recurs type params)
       (emitln "};")
 
-      (emitln "var " mname " = " (when async "async ")  "function ("
+      (emitln (decl "const ") mname " = " (when async "async ")  "function ("
               (comma-sep
                (if variadic
                  (concat (butlast params) ['var_args])
                  params)) "){")
       (when type
-        (emitln "var self__ = this;"))
+        (emit-self (if variadic (concat (butlast params) ['var_args]) params)))
       (when variadic
-        (emits "var ")
+        ;; a rest param named var_args is the wrapper's own param
+        (when-not (= "var_args" (str (munge (last params))))
+          (emits (decl "let ")))
         (emit (last params))
         (emitln " = null;")
         (emitln "if (arguments.length > " (dec (count params)) ") {")
@@ -1423,9 +1499,9 @@
             (emits "return "))
           ;; only defines and returns the fn, marked pure for bundlers
           (emitln (when *esm-emitting* "/*@__PURE__*/") "(function() {")
-          (emitln "var " mname " = null;")
+          (emitln (decl "let ") mname " = null;")
           (doseq [[n meth] ms]
-            (emits "var " n " = ")
+            (emits (decl "const ") n " = ")
             (if (:variadic? meth)
               (emit-variadic-fn-method meth)
               (emit-fn-method meth))
@@ -1434,8 +1510,8 @@
                   (comma-sep (if variadic
                                (concat (butlast maxparams) ['var_args])
                                maxparams)) "){")
-          (when variadic
-            (emits "var ")
+          (when (and variadic (not= "var_args" (str (munge (last maxparams)))))
+            (emits (decl "const "))
             (emit (last maxparams))
             (emitln " = var_args;"))
           (emitln "switch(arguments.length){")
@@ -1443,7 +1519,7 @@
             (if (:variadic? meth)
               (do (emitln "default:")
                   (let [restarg (munge (gensym))]
-                    (emitln "var " restarg " = null;")
+                    (emitln (decl "let ") restarg " = null;")
                     (emitln "if (arguments.length > " max-fixed-arity ") {")
                     (let [a (emit-arguments-to-array max-fixed-arity)]
                       (emitln restarg (cc " = new cljs.core.IndexedSeq(") a ",0,null);"))
@@ -1647,19 +1723,21 @@
                           (gensym (str name "-")))))
                     bindings)))]
       (doseq [{:keys [init] :as binding} bindings]
-        (emits "var ")
-        (emit binding) ; Binding will be treated as a var
         ;; an init needing statements assigns the binding from them, rather
         ;; than from an IIFE, in a fn body: at a namespace's top level the
         ;; statements would run in module scope, its locals module variables
         ;; (a loop over them is much slower than over an IIFE's locals)
-        (if-let [assign (when (and *hoisted-locals*
-                                   (statement-tail? init)
-                                   (not (uses-fn-scope? init)))
-                          (assign-tails init (munge binding)))]
-          (do (emitln ";")
-              (emit assign))
-          (emitln " = " init ";")))
+        (let [assign (when (and *hoisted-locals*
+                                (statement-tail? init)
+                                (not (uses-fn-scope? init)))
+                       (assign-tails init (munge binding)))]
+          ;; recur assigns loop locals, and the tails an assigned binding
+          (emits (decl (if (or is-loop assign) "let " "const ")))
+          (emit binding) ; Binding will be treated as a var
+          (if assign
+            (do (emitln ";")
+                (emit assign))
+            (emitln " = " init ";"))))
       (when is-loop (emitln "while(true){"))
       (emits expr)
       (when is-loop
@@ -1688,7 +1766,7 @@
   (let [temps (vec (take (count exprs) (repeatedly gensym)))
         params (:params frame)]
     (dotimes [i (count exprs)]
-      (emitln "var " (temps i) " = " (exprs i) ";"))
+      (emitln (decl "const ") (temps i) " = " (exprs i) ";"))
     (dotimes [i (count exprs)]
       (emitln (munge (params i)) " = " (temps i) ";"))
     (emitln "continue;")))
@@ -1697,9 +1775,17 @@
   [{expr :body :keys [bindings env]}]
   (let [context (:context env)]
     (when (= :expr context) (emits (iife-open env)))
-    (doseq [{:keys [init] :as binding} bindings]
-      (emitln "var " (munge binding) " = " init ";"))
-    (emits expr)
+    ;; outside an IIFE renamed apart from the scope's other locals, as let's
+    ;; bindings are (see emit-let-scope): a const can't be declared twice
+    (binding [*lexical-renames*
+              (into *lexical-renames*
+                (when (and *esm-emitting* (not= :expr context))
+                  (map (fn [binding]
+                         [(hash-scope binding) (gensym (str (:name binding) "-"))])
+                       bindings)))]
+      (doseq [{:keys [init] :as binding} bindings]
+        (emitln (decl "const ") (munge binding) " = " init ";"))
+      (emits expr))
     (when (= :expr context) (emits (iife-close env)))))
 
 (defn protocol-prefix [psym]
@@ -2561,7 +2647,7 @@
     (when body
       (emitln "constructor(" (comma-sep (map munge params)) ") {")
       ;; this is accessible once the base class' constructor returned
-      (emitln (if base "var self__;" "var self__ = this;"))
+      (emitln (if base (str (decl "let ") "self__;") (str (decl "const ") "self__ = this;")))
       (emit body)
       (emitln "}"))
     (emits "})")))

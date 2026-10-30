@@ -9,6 +9,10 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 - `#x` (or `#jsx`) literals, React elements of hiccup compiled to `react/jsx-runtime` calls (`cljf.jsx`, which namespaces using them require implicitly): props map literals become JavaScript objects at compile time, with React's prop names, and only spread props and children the compiler can't see into are converted at runtime. `:jsx-import-source` picks the JSX runtime (i.e. `"preact"`, `"hono/jsx"`), as TypeScript's `jsxImportSource`, for the build or, as metadata, a namespace. `create-clojurific` has a React template using them, and its Hono template renders a page with them.
 
+### Changed
+
+- ES module output declares the locals of functions with `const`, or `let` where they're assigned (loop locals, the locals hoisted from expressions, which are now declared at the start of the function, and `case` results), instead of `var`, and puts each `case` clause in a block. Tools such as React Compiler reject functions with `var`. Module level vars stay `var`; classic output is unchanged.
+
 ### Fixed
 
 - Locals whose names munge to the same JavaScript identifier (i.e. `board_id` and `board-id`) are renamed apart instead of one overwriting the other, in `let`, `loop`, `letfn`, fn params, destructuring and `catch` (CLJS-2461, CLJS-3426). `letfn` bindings shadowing a local of the same name are renamed apart too.
