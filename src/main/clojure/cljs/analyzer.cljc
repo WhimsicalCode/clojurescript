@@ -139,6 +139,7 @@
    :redef-in-file true
    :dynamic true
    :fn-var true
+   :memo-fn true
    :fn-arity true
    :fn-deprecated true
    :declared-arglists-mismatch true
@@ -324,6 +325,12 @@
   (str "Wrong number of args (" (:argc info) ") passed to "
     (or (:ctor info)
       (:name info))))
+
+(defmethod error-message :memo-fn
+  [warning-type info]
+  (str "^:memo fn " (:name info) " has several arities or a variadic one: React "
+       "Compiler compiles components and hooks, fns of one fixed arity, "
+       "not their dispatch"))
 
 (defmethod error-message :fn-deprecated
   [warning-type info]
@@ -1726,11 +1733,30 @@ x                          (not (contains? ret :info)))
     (js-var-fn? fn-ast) 'js
     :else               (when (= 'js (:ns info)) 'js)))
 
+(def ^:private js-array-fns
+  "The JavaScript fns returning a JavaScript array, by the module exporting
+  them (munge-node-lib's name of an npm module, as :js-var names have it): the
+  React hooks returning one, [value setter] and the like, destructured by
+  index for React Compiler (see the Vite plugin's reactCompiler), which treats
+  nth's call as mutating the array and memoizes nothing after it."
+  (let [react-hooks '#{useState useReducer useTransition useActionState useOptimistic useFormState}]
+    {"react" react-hooks
+     "preact$hooks" react-hooks
+     "preact$compat" react-hooks}))
+
 (defn js-array-init?
   "Whether init, the AST of a local's init, certainly evaluates to a JavaScript
-  array: a #js [] literal."
+  array: a #js [] literal, or a call of an npm module's fn that returns one
+  (js-array-fns, React's useState and the like)."
   [init]
-  (= :js-array (:op init)))
+  (case (:op init)
+    :js-array true
+    :invoke (let [f (:fn init)]
+              (and (= :js-var (:op f))
+                   (let [[_ module fn-name]
+                         (re-find #"node\$module\$([\w$]+)\.(\w+)$" (str (-> f :info :name)))]
+                     (boolean (some-> (get js-array-fns module) (contains? (symbol fn-name)))))))
+    false))
 
 (defn infer-invoke [env {fn-ast :fn :keys [args] :as ast}]
   (let [me (assoc (find-matching-method fn-ast args) :op :fn-method)]
@@ -2453,6 +2479,16 @@ x                          (not (contains? ret :info)))
                (:async (meta name))
                (:async (meta (first form))))
         env (assoc env :async async)
+        ;; ^:memo (defn ^:memo Row [props] ...): React Compiler's "use memo"
+        ;; directive in ES module output, see cljs.compiler/emit-fn-body
+        ;; multi-arity and variadic defns' fns (their dispatch and methods)
+        ;; carry the defn's :top-fn: not compiled as one component
+        memo-meta    (some #(when (:memo %) %) [(meta name) (meta (first form))])
+        multi?       (some? (:top-fn memo-meta))
+        memo         (and (some? memo-meta) (not multi?))
+        ;; React Compiler compiles ^:memo fns: macros (for) emit code it
+        ;; accepts in them, and in the fns in them
+        env          (cond-> env (some? memo-meta) (assoc :memo true))
         env          (if (some? name)
                        (update-in env [:fn-scope] conj name-var)
                        env)
@@ -2498,9 +2534,14 @@ x                          (not (contains? ret :info)))
         inferred-ret-tag (let [inferred-tags (map (partial infer-tag env) (map :body methods))]
                            (when (apply = inferred-tags)
                              (first inferred-tags)))
+        ;; defn warns of multi-arity and variadic ones, once
+        _     (when (and memo (or (< 1 (count methods)) variadic))
+                (warning :memo-fn env {:name name}))
+        memo  (and memo (= 1 (count methods)) (not variadic))
         ast   (merge {:op :fn
                       :env env
                       :form form
+                      :memo (boolean memo)
                       :name name-var
                       ;; named by the form, not by def
                       :named? named-fn?
@@ -2568,8 +2609,15 @@ x                          (not (contains? ret :info)))
         ;; the real pass
         [meth-env bes]
         (reduce (fn [[meth-env bes] {:keys [name shadow] :as be}]
-                  (let [env (assoc-in meth-env [:locals name] shadow)
-                        fexpr (analyze env (n->fexpr name))
+                  (let [fform (n->fexpr name)
+                        ;; a fn named after its binding (letfn's) refers to
+                        ;; itself by its own name, an anonymous one (for's
+                        ;; iterators in ES module output) through the binding
+                        self-named? (and (seq? fform) (symbol? (second fform)))
+                        env (if self-named?
+                              (assoc-in meth-env [:locals name] shadow)
+                              meth-env)
+                        fexpr (analyze env fform)
                         be' (assoc be
                               :init fexpr
                               :variadic? (:variadic? fexpr)

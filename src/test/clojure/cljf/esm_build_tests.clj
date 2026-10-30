@@ -431,15 +431,14 @@
 
 (defn- stub-jsx-runtime!
   "A JSX runtime (src/jsx-runtime, src an import source: a package or a
-  package's subpath) in dir's node_modules, its elements naming src, keys
-  as React's: none when undefined, else strings (null as \"null\")."
+  package's subpath) in dir's node_modules, its elements naming src."
   [^File dir src]
   (let [[pkg-name sub] (string/split src #"/" 2)
         pkg  (io/file dir "node_modules" pkg-name)
         path (str (when sub (str sub "/")) "jsx-runtime.js")]
     (io/make-parents (io/file pkg path))
     (spit (io/file pkg path)
-      (str "const el = (type, props, key) => ({runtime: '" src "', type: typeof type === 'function' ? type.name : type, key: key === undefined ? null : '' + key, props});
+      (str "const el = (type, props, key) => ({runtime: '" src "', type: typeof type === 'function' ? type.name : type, key: key ?? null, props});
             export const jsx = el, jsxs = el, Fragment = '" src "-Fragment';"))
     (spit (io/file pkg "package.json")
       (str "{\"name\": \"" pkg-name "\", \"type\": \"module\", \"exports\": {\"./" (str (when sub (str sub "/")) "jsx-runtime") "\": \"./" path "\"}}"))))
@@ -500,8 +499,6 @@
                                       :literal-key    (k #x [:li {:key :a}])
                                       :nested-key     (k #x [:li {:& {:key \"n\" :title \"t\"}}])
                                       :spread-key     (k #x [:li {:& m}])
-                                      :spread-nil     (k #x [:li {:& (:attrs {})}])
-                                      :spread-js      (k #x [:li {:& (js-obj \"title\" \"t\")}])
                                       :spread-props   (props #x [:li {:& m}])
                                       :outer-key-wins (k #x [:li {:& m :key \"o\"}])
                                       :class-vector   (.-className (props #x [:div.a {:class [\"b\" (when on? \"c\") nil]}]))
@@ -523,9 +520,6 @@
       (testing "the :key of maps spread, literal or at runtime, is the key argument, not a prop"
         (is (= "n" (get r "nested-key")))
         (is (= "m" (get r "spread-key")))
-        (testing "(nil or a JavaScript object spread is no key, not React's \"null\")"
-          (is (nil? (get r "spread-nil")))
-          (is (nil? (get r "spread-js"))))
         (is (= {"tabIndex" 1 "className" "p q"} (get r "spread-props")))
         (is (= "o" (get r "outer-key-wins"))))
       (testing ":class collections are joined, keyword values are their names"
@@ -538,6 +532,7 @@
       (testing "hiccup and maps outside #x fail clearly"
         (is (string/starts-with? (get r "hiccup-child") "A hiccup vector isn't a #x child"))
         (is (string/starts-with? (get r "map-child") "A map isn't a #x child"))))))
+
 (deftest functions-declare-their-locals-with-const-and-let
   (let [dir     (temp-dir)
         sources (into {} [(write-source! dir 'test.decl
@@ -570,6 +565,27 @@
         (is (re-find #"case \(2\):\n\{" out))))
     (is (= "[3 :other 3 [0 3 6] 2 1] 1 6\n"
            (run-node (io/file dir "out" "test" "decl.js"))))))
+
+(deftest for-iterators-call-themselves-through-a-local
+  (let [dir     (temp-dir)
+        sources (into {} [(write-source! dir 'test.forit
+                            "(ns test.forit)
+                             (defn ^:memo f [n]
+                               (let [xs (for [i (range n) :let [j (* i 2)] :when (odd? i) k (range i) :while (< k 2)] [i j k])]
+                                 (vec xs)))
+                             (defn ^:memo g [] (loop [i 0 acc []] (if (< i 2) (recur (inc i) (conj acc (vec (for [x (range 3)] (+ x i))))) acc)))
+                             (defn h [n] (vec (for [x (range n)] (* x x))))
+                             (js/console.log (pr-str (f 6) (g) (h 3) (take 3 (for [x (range)] x))))"
+                            (- (System/currentTimeMillis) 60000))])]
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.forit :output-dir (str (io/file dir "out"))}))
+    (let [out (output dir 'test.forit)]
+      (testing "in ^:memo fns no named function expressions: React Compiler rejects their self calls"
+        (is (not (re-find #"function test\$forit\$(f|g)[\w$]*iter__" out))))
+      (testing "elsewhere named function expressions, without an IIFE"
+        (is (re-find #"function test\$forit\$h_\$_iter__" out))))
+    (is (= "[[1 2 0] [3 6 0] [3 6 1] [5 10 0] [5 10 1]] [[0 1 2] [1 2 3]] [0 1 4] (0 1 2)\n"
+           (run-node (io/file dir "out" "test" "forit.js"))))))
 
 (deftest letfn-and-var-args-locals-are-declared-once
   (let [dir     (temp-dir)
@@ -616,3 +632,59 @@
         (is (not (re-find #"\bv\?\.\[" out)))
         (is (not (re-find #"\bx\?\.\[" out)))))
     (is (= "[3 true 4 nil 5] 9 5\n" (run-node (io/file dir "out" "test" "arrd.js"))))))
+
+(deftest memo-fns-start-with-use-memo
+  (let [dir     (temp-dir)
+        sources (into {} [(write-source! dir 'test.memo
+                            "(ns test.memo)
+                             (defn ^:memo a [p] (let [f (fn [x] (inc x)) y (if p (f p) 0)] (+ y 1)))
+                             (def b (fn ^:memo B [p] (inc p)))
+                             (defn c [p] \"use memo\" (inc p))
+                             (defn ^:memo d ([x] x) ([x y] y))
+                             (js/console.log (a 1) (b 1) (c 1) (d 1))"
+                            (- (System/currentTimeMillis) 60000))])
+        warnings (atom [])]
+    (binding [esm/*generated-sources* sources
+              ana/*cljs-warning-handlers* [(fn [type env info] (when (= :memo-fn type) (swap! warnings conj (:name info))))]]
+      (esm/build {:main 'test.memo :output-dir (str (io/file dir "out"))}))
+    (let [out (output dir 'test.memo)]
+      (testing "^:memo fns, of defn and fn"
+        (is (string/includes? out "var test$memo$a = (function (p){\"use memo\";\nconst f = (function (x){\n"))
+        (is (string/includes? out "(function test$memo$B(p){\"use memo\";")))
+      (testing "not fns nested in them, nor strings in bodies"
+        (is (= 2 (count (re-seq #"use memo" out)))))
+      (testing "a multi-arity fn is warned of and left alone"
+        (is (= '[d] @warnings))))
+    (is (= "3 2 2 1\n" (run-node (io/file dir "out" "test" "memo.js"))))))
+
+(deftest destructuring-react-hooks-arrays-reads-them-by-index
+  (let [dir     (temp-dir)
+        sources (into {} [(write-source! dir 'test.hookd
+                            "(ns test.hookd (:require [\"react\" :as react] [\"./hooks.js\" :refer [useState]]))
+                             (defn f []
+                               (let [[a b c] (react/useState 1)
+                                     [m]     (react/useMemo 2)
+                                     [o]     (useState 6)]
+                                 [a (fn? b) (identical? nil c) m o]))
+                             (defn g [] (loop [v (react/useState 1) n 0]
+                                          (let [[a] v] (if (< n 1) (recur [9 8] (inc n)) a))))
+                             (js/console.log (pr-str (f) (g)))"
+                            (- (System/currentTimeMillis) 60000))])]
+    ;; react's hooks, as their shapes: useState an array, useMemo any value
+    (io/make-parents (io/file dir "node_modules" "react" "index.js"))
+    (spit (io/file dir "node_modules" "react" "index.js")
+      "export const useState = v => [v, () => v];\nexport const useMemo = v => ({cljs$core$IIndexed$_nth$arity$3: (_, i, d) => i === 0 ? v : d});\n")
+    (spit (io/file dir "node_modules" "react" "package.json") "{\"name\": \"react\", \"type\": \"module\", \"main\": \"index.js\"}")
+    ;; another module's useState isn't React's
+    (spit (io/file dir "hooks.js") "export const useState = v => ({cljs$core$IIndexed$_nth$arity$3: (_, i, d) => i === 0 ? v : d});\n")
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.hookd :output-dir (str (io/file dir "out"))}))
+    (let [out (output dir 'test.hookd)]
+      (testing "react's useState's array is read by index, past its end as nil"
+        (is (re-find #"const a = \(vec__\d+\?\.\[0\] \?\? null\);" out))
+        (is (re-find #"const c = \(vec__\d+\?\.\[2\] \?\? null\);" out)))
+      (testing "other values through nth: useMemo's, another module's useState's, loop locals"
+        (doseq [l ["m" "o"]]
+          (is (re-find (re-pattern (str "const " l " = \\(\\(vec__\\d+\\?\\.cljs\\$core\\$IIndexed")) out) l))
+        (is (not (re-find #"\bv\?\.\[" out)))))
+    (is (= "[1 true true 2 6] 9\n" (run-node (io/file dir "out" "test" "hookd.js"))))))

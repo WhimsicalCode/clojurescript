@@ -8,11 +8,14 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 ### Added
 
 - `#x` (or `#jsx`) literals, React elements of hiccup compiled to `react/jsx-runtime` calls (`cljf.jsx`, which namespaces using them require implicitly): props map literals become JavaScript objects at compile time, with React's prop names, and only spread props and children the compiler can't see into are converted at runtime. `:jsx-import-source` picks the JSX runtime (i.e. `"preact"`, `"hono/jsx"`), as TypeScript's `jsxImportSource`, for the build or, as metadata, a namespace. `create-clojurific` has a React template using them, and its Hono template renders a page with them.
+- The Vite plugin's `reactCompiler` option runs React Compiler on the compiled namespaces, with `#x` literals' `jsx()` calls declared to it as `React.createElement` is. `^:memo` fns (`(defn ^:memo App [] ...)`) start with React Compiler's `"use memo"` directive in ES module output. `create-clojurific` has a `react-compiler` template.
 
 ### Changed
 
 - ES module output declares the locals of functions with `const`, or `let` where they're assigned (loop locals, the locals hoisted from expressions, which are now declared at the start of the function, and `case` results), instead of `var`, and puts each `case` clause in a block. Tools such as React Compiler reject functions with `var`. Module level vars stay `var`; classic output is unchanged.
 - In ES module output, sequential destructuring of a `let` local certain to hold a JavaScript array (a `#js []` literal) reads it with `(v?.[i] ?? null)` instead of `nth`, about 2.5 times as fast.
+- In `^:memo` fns (React Compiler's) in ES module output, `for`'s iterator fns call themselves through a `letfn` local instead of being named function expressions, which React Compiler rejects. `letfn*` bindings of anonymous fns refer to themselves through the binding.
+- In ES module output, sequential destructuring of the value of React's (or Preact's) `useState`, `useReducer`, `useTransition`, `useActionState`, `useOptimistic` or `useFormState` reads it by index, as of a `#js []` literal: React Compiler treats `nth`'s call as mutating the array and memoizes nothing after it.
 
 ### Fixed
 

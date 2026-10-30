@@ -71,6 +71,13 @@ for (const template of TEMPLATES) {
     const source = readFileSync(path.join(root, 'src', 'my_app', 'core.cljs'), 'utf8');
     assert.match(source, /^\(ns my-app\.core\b/);
     assert.match(source, /src\/my_app\/core\.cljs/);
+    if (template === 'react-compiler') {
+      assert.ok(pkg.devDependencies['babel-plugin-react-compiler']);
+      assert.ok(pkg.devDependencies['@babel/core']);
+      assert.match(viteConfig, /reactCompiler: true/);
+      assert.match(source, /\(defn \^:memo App/);
+      assert.match(source, /#x \[App\]/);
+    }
     if (template === 'react') {
       assert.ok(pkg.dependencies.react);
       assert.doesNotMatch(deps, /reagent|uix/);

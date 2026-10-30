@@ -53,6 +53,7 @@ npm create clojurific@latest
 This scaffolds a Vite project based on one of the following templates:
 * Vanilla
 * [React](https://react.dev/), with [`#x` literals](#jsx-literals)
+* React with [React Compiler](#react-compiler)
 * [Reagent](https://reagent-project.github.io/)
 * [UIx](https://uix-cljs.dev/)
 * [Hono](https://hono.dev/) (backend)
@@ -405,6 +406,23 @@ jsxs("div", {className: "counter", style: {fontSize: 14}, children: [jsxs("butto
 
   Props get React's names (`className`, `htmlFor`), which Preact and Hono accept too.
 - Source maps point the elements, their props and children to their place in the literal.
+
+### React Compiler
+
+The Vite plugin's `reactCompiler` option runs [React Compiler](https://react.dev/learn/react-compiler) on the compiled namespaces (`babel-plugin-react-compiler` and `@babel/core` installed in the project):
+
+```js
+cljf({ outputDir: 'target/cljs', reactCompiler: true })
+```
+
+It compiles the `^:memo` fns, which ES module output emits with React Compiler's `"use memo"` directive. Components and hooks are fns of one fixed arity: a multi-arity or variadic `^:memo` fn is warned of and left alone. `{ compilationMode: 'all' }` (React Compiler's options) compiles every function it recognizes as a component or hook instead.
+
+```clojure
+(defn ^:memo Row [^js props]
+  #x [:li (.-label props)])
+```
+
+`#x` literals' `jsx()` calls are declared to it as `React.createElement` is (they freeze their props and return frozen elements), so that it memoizes elements one by one. Without that, an unknown function's arguments may be mutated, and it caches nothing apart. The output it needs (`const` and `let` locals, `for`'s iterators, hooks' arrays destructured by index) is ES module output's. Components follow React's rules: they read props and state, not atoms, during render.
 
 ### `^:export`
 

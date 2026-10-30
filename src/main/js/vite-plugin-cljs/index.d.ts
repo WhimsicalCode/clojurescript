@@ -95,6 +95,12 @@ export interface CljfOptions {
   entries?: string[];
   /** `:js-entries` the dev server runs in its ssr environment once compiled. */
   ssrEntries?: string[];
+  /**
+   * Run React Compiler on the compiled namespaces: true, or babel-plugin-react-compiler's options. Needs
+   * babel-plugin-react-compiler and @babel/core in the project. By default (compilationMode annotation) it compiles
+   * the `^:memo` fns, emitted with a `"use memo"` directive. `#x` literals' jsx() calls are declared to it as React.createElement is.
+   */
+  reactCompiler?: boolean | Record<string, unknown>;
   /** Accept cljs_eval from pages on other hosts too, defaults to false. */
   replRemoteConsole?: boolean;
   /** Hot reload despite compiler warnings, like shadow-cljs' `:devtools {:ignore-warnings true}`: they go to the terminal only, defaults to false (hot reload pauses while any namespace has warnings, and the overlay shows them). */

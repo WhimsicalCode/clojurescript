@@ -1290,7 +1290,12 @@
     (emitln "self__ = this;")
     (emitln (decl "const ") "self__ = this;")))
 
-(defn- emit-fn-body*
+(def ^:dynamic *fn-memo*
+  "Whether the fn being emitted is ^:memo: its single method's body starts
+  with React Compiler's \"use memo\" directive in ES module output."
+  false)
+
+(defn- emit-fn-body**
   [expr recurs type params]
   (when type
     (emit-self params))
@@ -1299,6 +1304,11 @@
   (when recurs
     (emitln "break;")
     (emitln "}")))
+
+(defn- emit-fn-body*
+  [expr recurs type params]
+  (binding [*fn-memo* false]
+    (emit-fn-body** expr recurs type params)))
 
 #?(:clj
    (def ^:private ^:dynamic *fn-decls*
@@ -1328,15 +1338,19 @@
   "Emits the body of a fn method, after its opening brace (on its line),
   declaring the locals its lets in expression position hoisted (see emit-let):
   at its end with var, or in ES module output at its start with let, on the
-  opening brace's line (after which the source map has no entries). The
-  declaration isn't known until the body is emitted: the outermost fn's body
-  is written to a buffer, the fns in it write a placeholder their declaration
-  replaces once the outermost's is emitted. type: this is self__."
+  opening brace's line (after which the source map has no entries), after a
+  ^:memo fn's use memo directive. The declaration isn't known until the body
+  is emitted: the outermost fn's body is written to a buffer, the fns in it
+  write a placeholder their declaration replaces once the outermost's is
+  emitted. type: this is self__."
   [expr recurs type params]
   (binding [*hoisted-locals* (atom [])]
     (if #?(:clj *esm-emitting* :cljs false)
       #?(:clj
          (let [decl-str #(when-let [locals (seq %)] (str "let " (string/join ", " locals) ";"))]
+           ;; a directive comes first, on the opening brace's line too
+           (when *fn-memo*
+             (.write ^Writer *out* "\"use memo\";"))
            (if-let [decls *fn-decls*]
              (let [n (count @decls)]
                (swap! decls assoc n nil)
@@ -1457,7 +1471,7 @@
               bindings))))
 
 (defmethod emit* :fn
-  [{variadic :variadic? :keys [name named? env methods max-fixed-arity recur-frames in-loop loop-lets] :as ast}]
+  [{variadic :variadic? :keys [name named? env methods max-fixed-arity recur-frames in-loop loop-lets memo] :as ast}]
   ;;fn statements get erased, serve no purpose and can pollute scope if named
   (when-not (= :statement (:context env))
     (let [;; Under ESM the name def gives a fn is the module binding of its var:
@@ -1485,7 +1499,9 @@
       (if (= 1 (count methods))
         (if variadic
           (emit-variadic-fn-method (assoc (first methods) :name name))
-          (emit-fn-method (assoc (first methods) :name name)))
+          ;; a single fixed arity's method is the function React Compiler sees
+          (binding [*fn-memo* (and memo *esm-emitting*)]
+            (emit-fn-method (assoc (first methods) :name name))))
         (let [name (or name (gensym))
               mname (munge name)
               maxparams (apply max-key count (map :params methods))

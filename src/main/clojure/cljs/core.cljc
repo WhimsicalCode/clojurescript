@@ -2697,6 +2697,17 @@
                                      (conj groups [k v])))
                            [] (partition 2 seq-exprs)))
              err (core/fn [& msg] (throw (ex-info (apply core/str msg) {})))
+             ;; in ^:memo fns (React Compiler's, in ES module output) the
+             ;; iterator fns call themselves through a letfn local, not as
+             ;; named fn expressions, which React Compiler rejects. The letfn
+             ;; is an IIFE, which it caches the seq apart in (unlike hoisted
+             ;; locals): elsewhere the named fn expressions, without one
+             memo? (core/and (:memo &env)
+                             (= :esm (:module-format (cljs.analyzer/compiler-options))))
+             iter-fn (core/fn [giter params & body]
+                       (if memo?
+                         `(letfn* [~giter (fn ~params ~@body)] ~giter)
+                         `(fn ~giter ~params ~@body)))
              emit-bind (core/fn emit-bind [[[bind expr & mod-pairs]
                                        & [[_ next-expr] :as next-groups]]]
                          (core/let [giter (gensym "iter__")
@@ -2719,8 +2730,8 @@
                                                         (~giter (rest ~gxs)))))]
                            (if next-groups
                              #_ "not the inner-most loop"
-                             `(fn ~giter [~gxs]
-                                (lazy-seq
+                             (iter-fn giter [gxs]
+                               `(lazy-seq
                                   (loop [~gxs ~gxs]
                                     (when-first [~bind ~gxs]
                                       ~(do-mod mod-pairs)))))
@@ -2740,8 +2751,8 @@
                                                     :else
                                                     `(do (chunk-append ~gb ~body-expr)
                                                          (recur (unchecked-inc ~gi)))))]
-                               `(fn ~giter [~gxs]
-                                  (lazy-seq
+                               (iter-fn giter [gxs]
+                                 `(lazy-seq
                                     (loop [~gxs ~gxs]
                                       (when-let [~gxs (seq ~gxs)]
                                         (if (chunked-seq? ~gxs)
@@ -3602,6 +3613,8 @@
                     ;                    (next inline))))
                     ;      m))
                     m (conj (if (meta name) (meta name) {}) m)]
+           (core/when (core/and (:memo m) (core/or (multi-arity-fn? fdecl) (variadic-fn? fdecl)))
+             (cljs.analyzer/warning :memo-fn &env {:name name}))
            (core/cond
              (multi-arity-fn? fdecl)
              (multi-arity-fn name

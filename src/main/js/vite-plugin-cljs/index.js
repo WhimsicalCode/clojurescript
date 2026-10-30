@@ -17,6 +17,7 @@ import { compilerCommand } from '../cljf/launcher.js';
 import { pruneChunks, propertyRenames } from './prune.js';
 import { ednValue } from './edn.js';
 import { watchWarnings } from './warnings.js';
+import { reactCompilerTransform } from './react-compiler.js';
 
 const EVENT_PREFIX = '[cljf.esm] ';
 const NPM_AS = 'cljs-npm-as:';
@@ -406,6 +407,11 @@ export default module.exports;
  *   warnings, like shadow-cljs' :devtools {:ignore-warnings true}: they go
  *   to the terminal only, defaults to false: hot reload pauses while any
  *   namespace has warnings, and the overlay shows them
+ * @param {boolean|object} [options.reactCompiler] runs React Compiler
+ *   (babel-plugin-react-compiler and @babel/core, installed in the project) on
+ *   the compiled namespaces, true or its options: by default the ^:memo fns,
+ *   emitted with a "use memo" directive (compilationMode annotation). jsx() calls (#x literals)
+ *   are declared to it as React.createElement is, see react-compiler.js
  * @param {boolean} [options.replRemoteConsole] accept cljs_eval (forms the
  *   compiler compiles, running its macros) from pages on other hosts too,
  *   defaults to false: only from this machine. A proxy in front of the dev
@@ -422,6 +428,7 @@ export default function cljf(options) {
   const localModules = new Set();
   // the compiler warnings, which hold hot updates back (see warnings.js)
   const warnings = watchWarnings({ ignoreWarnings: options.ignoreWarnings });
+  let reactCompiler = null;
 
   function compilerArgs(command, extra) {
     const profile = options.profile ?? (command === 'watch' ? 'dev' : 'release');
@@ -690,8 +697,14 @@ export default function cljf(options) {
 
     // Vite's dev server only converts CommonJS in node_modules (pre-bundling),
     // project CommonJS files required by ClojureScript are converted here
-    transform(code, id) {
-      if (config.command !== 'serve' || !localModules.has(id.split('?')[0]) || !isCommonJS(code)) return null;
+    async transform(code, id) {
+      const file = id.split('?')[0];
+      if (options.reactCompiler && file.startsWith(outputDir + path.sep) && file.endsWith('.js')) {
+        reactCompiler ??= reactCompilerTransform(options.reactCompiler,
+          spec => resolveFromProject(config.root, spec, 'run React Compiler (reactCompiler)'));
+        return reactCompiler(code, file);
+      }
+      if (config.command !== 'serve' || !localModules.has(file) || !isCommonJS(code)) return null;
       return commonJSToESM(code);
     },
 
