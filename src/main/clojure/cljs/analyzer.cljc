@@ -1375,6 +1375,38 @@ x                          (not (contains? ret :info)))
     {:name sym}
     lb))
 
+(defn- munged-local-name
+  "The JavaScript identifier the compiler munges local sym to, before shadow
+  renaming (cljs.compiler/munge)."
+  [sym]
+  (let [s (munge (str sym))]
+    (if (contains? js-reserved s) (str s "$") s)))
+
+(defn- shadow-chain-length [lb]
+  (loop [d 0 lb lb]
+    (if-some [s (:shadow lb)] (recur (inc d) s) d)))
+
+(defn shadowed-local
+  "The local in locals a new local sym shadows: the one sym names or, when
+  another munges to the same JavaScript identifier (a-b and a_b, CLJS-2461),
+  the deepest-shadowing of those, so that the compiler renames sym apart from
+  all of them."
+  [locals sym]
+  (let [lb (handle-symbol-local sym (get locals sym))
+        m  (munged-local-name sym)]
+    (if (and (neg? (.indexOf ^String m "_")) (neg? (.indexOf ^String m "$")))
+      ;; only names munged to something with _ or $ can collide
+      lb
+      (reduce-kv
+        (fn [best k v]
+          (if (and (symbol? k) (not= k sym) (= m (munged-local-name k)))
+            (let [v (handle-symbol-local k v)]
+              (if (or (nil? best) (> (shadow-chain-length v) (shadow-chain-length best)))
+                v
+                best))
+            best))
+        lb locals))))
+
 (defn qualified->dotted
   [sym]
   (symbol (str (namespace sym) "." (name sym))))
@@ -2309,7 +2341,7 @@ x                          (not (contains? ret :info)))
           nmeta  (meta name)
           tag    (:tag nmeta)
           shadow (when (some? locals)
-                   (handle-symbol-local name (locals name)))
+                   (shadowed-local locals name))
           env    (merge (select-keys env [:context])
                    {:line line :column column})
           param  {:op :binding
@@ -2374,7 +2406,7 @@ x                          (not (contains? ret :info)))
 (defn fn-name-var [env locals name]
   (when (some? name)
     (let [ns       (-> env :ns :name)
-          shadow   (or (handle-symbol-local name (get locals name))
+          shadow   (or (shadowed-local locals name)
                        (get-in env [:js-globals name]))
           fn-scope (:fn-scope env)
           name-var {:op :binding
@@ -2507,6 +2539,7 @@ x                          (not (contains? ret :info)))
         (reduce (fn [[{:keys [locals] :as env} bes] n]
                   (let [ret-tag (-> n meta :tag)
                         fexpr (no-warn (analyze env (n->fexpr n)))
+                        shadow (shadowed-local locals n)
                         be (cond->
                              {:op :binding
                               :name n
@@ -2516,7 +2549,8 @@ x                          (not (contains? ret :info)))
                               :line (get-line n env)
                               :column (get-col n env)
                               :local :letfn
-                              :shadow (handle-symbol-local n (locals n))
+                              :shadow shadow
+                              :info {:name n :shadow shadow}
                               :variadic? (:variadic? fexpr)
                               :max-fixed-arity (:max-fixed-arity fexpr)
                               :method-params (map :params (:methods fexpr))}
@@ -2599,7 +2633,7 @@ x                          (not (contains? ret :info)))
           (let [init-expr (analyze-let-binding-init env init (cons {:params bes} *loop-lets*))
                 line (get-line name env)
                 col (get-col name env)
-                shadow (or (handle-symbol-local name (get-in env [:locals name]))
+                shadow (or (shadowed-local (:locals env) name)
                            (get-in env [:js-globals name]))
                 be {:op :binding
                     :name name
