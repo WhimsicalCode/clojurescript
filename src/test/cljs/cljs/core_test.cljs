@@ -571,6 +571,34 @@
     (let [x (fn [] "overwritten")]
       (is (= "original" (y))))))
 
+(deftest test-letfn-shadowing-let
+  (let [x 1]
+    (letfn [(y [] x)
+            (x [] 2)]
+      (is (= 2 (x)))
+      (is (= 2 ((y)))))))
+
+;; CLJS-2461, CLJS-3426: locals that munge to the same JavaScript name
+(defn- munged-same-let [] (let [a_b 1 a-b 2] [a_b a-b]))
+(defn- munged-same-param [a_b] (let [a-b 2] [a_b a-b]))
+(defn- munged-same-keys [{:keys [board_id]}]
+  (let [board-id (str "parsed " board_id)] [board_id board-id]))
+
+(deftest test-locals-munged-to-the-same-name
+  (is (= [1 2] (munged-same-let)))
+  (is (= [1 2] (munged-same-param 1)))
+  (is (= ["x" "parsed x"] (munged-same-keys {:board_id "x"})))
+  (is (= [1 2] (let [a_b 1] (let [a-b 2] [a_b a-b]))))
+  (is (= [3 2] (let [a_b 1 a-b 2 a_b 3] [a_b a-b])))
+  (is (= [3 4] ((fn [a_b] (let [a-b 2 a_b 3 a-b 4] [a_b a-b])) 0)))
+  (is (= [1 3] (loop [a_b 1 a-b 2]
+                 (if (< a-b 3) (recur a_b (inc a-b)) [a_b a-b]))))
+  (is (= [3 2] (let [a_b 1] (let [a-b 2] (let [a_b 3] ((fn [] [a_b a-b])))))))
+  (is (= 1 (letfn [(a_b [] 1) (a-b [] 2)] (a_b))))
+  (is (= 13 (let [a-b 1] (+ 10 (let [a_b 2] (+ a-b a_b))))))
+  (is (= [1 2] (let [a-b 1] (try (throw 2) (catch :default a_b [a-b a_b])))))
+  (is (= [1 2] (let [let 1 let$ 2] [let let$]))))
+
 (deftest test-459
   (is (= (reduce-kv conj [] (sorted-map :foo 1 :bar 2))
         [:bar 2 :foo 1])))
