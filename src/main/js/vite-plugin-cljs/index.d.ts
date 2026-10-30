@@ -73,7 +73,7 @@ export interface CompilerOptions {
 }
 
 export interface CljfOptions {
-  /** The compiler's output directory, relative to cwd: `'out'` serves my.app as `/out/my/app.js`. */
+  /** The compiler's output directory, relative to cwd: `'out'` serves my.app as `/out/my/app.js`. Not in Vite's `build.outDir`, which builds empty. */
   outputDir: string;
   /** deps.edn aliases of the classpath the compiler runs with, i.e. `['cljs']`. */
   aliases?: string[];

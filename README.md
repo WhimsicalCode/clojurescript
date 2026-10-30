@@ -174,7 +174,7 @@ The plugin has TypeScript types (`vite-plugin-cljs/index.d.ts`): a `vite.config.
 
 | option | |
 |---|---|
-| `outputDir` | the compiler's output directory, relative to `cwd`, required. Pages load namespaces from it: `'out'` serves `my.app` as `/out/my/app.js` |
+| `outputDir` | the compiler's output directory, relative to `cwd`, required. Pages load namespaces from it: `'out'` serves `my.app` as `/out/my/app.js`. Not in Vite's `build.outDir`, which builds empty |
 | `aliases` | `deps.edn` aliases of the classpath the compiler runs with, e.g. `['cljs']` |
 | `command` | starts Clojure with the compiler on the classpath instead of the launcher, e.g. `['clojure', '-M:cljs']` |
 | `cwd` | the compiler's working directory, with the project's `deps.edn`, defaults to Vite's root |

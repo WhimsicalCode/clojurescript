@@ -414,6 +414,9 @@ export default module.exports;
 export default function cljf(options) {
   const manifestName = options.manifest ?? 'manifest.json';
   let config, proc, server, minify, root, cwd, outputDir, compiler;
+  // a build's info, read before Vite writes the bundle (which may empty its
+  // outDir)
+  let builtInfo;
   // chunks' preload edits whose source maps generateBundle composes
   const preloadEdits = new Map();
   // the namespaces of the pages' scripts, compiled as main namespaces
@@ -547,6 +550,19 @@ export default function cljf(options) {
       : relative).split(path.sep).join('/');
   }
 
+  // Vite empties its outDir before writing a build: the compiler's output
+  // can't be in it, unless build.emptyOutDir is false (Vite's default: true
+  // for an outDir in the root)
+  function checkOutDir(userConfig) {
+    const outDir = path.resolve(root, userConfig.build?.outDir ?? 'dist');
+    const emptied = userConfig.build?.emptyOutDir ?? (outDir + path.sep).startsWith(root + path.sep);
+    if (emptied && (outputDir === outDir || outputDir.startsWith(outDir + path.sep))) {
+      throw new Error(`[cljf] outputDir ${path.relative(cwd, outputDir) || '.'} is in Vite's build.outDir ` +
+        `${path.relative(root, outDir) || '.'}, which Vite empties before writing the bundle: ` +
+        'use an outputDir outside it, e.g. \'target/cljs\'');
+    }
+  }
+
   async function writeManifest(manifest) {
     if (!manifestName) return;
     const file = path.resolve(config.root, config.build.outDir, manifestName);
@@ -583,6 +599,7 @@ export default function cljf(options) {
       const entries = Object.values(inputObject(userInput ?? indexHtml, root));
       pageNamespaces = await Promise.all((await entrySources(entries, root)).map(sourceNamespace));
       if (env.command === 'build' && !env.isPreview) {
+        checkOutDir(userConfig);
         const start = Date.now();
         if (userConfig.build?.watch) {
           // vite build --watch: the compiler's watch builds, then watches the
@@ -596,7 +613,8 @@ export default function cljf(options) {
           });
         }
         console.log(`ClojureScript compiled in ${Date.now() - start}ms`);
-        const info = await buildInfo();
+        const info = builtInfo = await buildInfo();
+        if (!info) throw new Error(`[cljf] the compiler wrote no ${path.join(outputDir, 'cljs-esm.json')}`);
         const jsEntries = Object.fromEntries(Object.entries(info.entries ?? {})
           .filter(([name]) => !options.entries || options.entries.includes(name)));
         const entries = { ...info.main, ...jsEntries };
@@ -658,7 +676,10 @@ export default function cljf(options) {
     // a watch rebuild, started by the compiler writing its output, bundles
     // the finished compile
     async buildStart() {
-      if (config.command === 'build') await compiling;
+      if (config.command === 'build') {
+        await compiling;
+        builtInfo = (await buildInfo()) ?? builtInfo;
+      }
     },
 
     // :npm-interop :shadow, ["pkg" :as x] binds module.exports of CommonJS
@@ -809,9 +830,8 @@ export default function cljf(options) {
           }
           return seen;
         };
-        const info = await buildInfo();
         const manifest = {};
-        for (const [ns, file] of Object.entries(info.main)) {
+        for (const [ns, file] of Object.entries(builtInfo?.main ?? {})) {
           const chunk = chunks.find(c => c.facadeModuleId === path.join(outputDir, file));
           if (!chunk) continue;
           manifest[ns] = {

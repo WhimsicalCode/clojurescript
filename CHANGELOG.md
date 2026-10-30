@@ -16,6 +16,7 @@ releases, see its [changelog](https://github.com/clojure/clojurescript/blob/mast
 
 ### Fixed
 
+- `vite build` failed with `Cannot read properties of null (reading 'main')` when the Vite plugin's `outputDir` was in Vite's `build.outDir`, which Vite empties before writing the bundle, deleting the compiler's output; such an `outputDir` is now an error, unless `build.emptyOutDir` is `false` ([#19](https://github.com/WhimsicalCode/clojurific/issues/19)).
 - Locals whose names munge to the same JavaScript identifier (i.e. `board_id` and `board-id`) are renamed apart instead of one overwriting the other, in `let`, `loop`, `letfn`, fn params, destructuring and `catch` (CLJS-2461, CLJS-3426). `letfn` bindings shadowing a local of the same name are renamed apart too.
 - The REPL reported errors raised while macroexpanding (i.e. a macro's `ex-info`) without their message.
 - The watcher recompiles a batch of changed namespaces in dependency order, rather than in the order the changes were reported: a namespace using a var just added to one it requires, both changed at once (i.e. by a rebase or branch switch), no longer warns of an undeclared var, holding back hot reloads until it changes again.
