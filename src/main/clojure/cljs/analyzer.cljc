@@ -1726,6 +1726,12 @@ x                          (not (contains? ret :info)))
     (js-var-fn? fn-ast) 'js
     :else               (when (= 'js (:ns info)) 'js)))
 
+(defn js-array-init?
+  "Whether init, the AST of a local's init, certainly evaluates to a JavaScript
+  array: a #js [] literal."
+  [init]
+  (= :js-array (:op init)))
+
 (defn infer-invoke [env {fn-ast :fn :keys [args] :as ast}]
   (let [me (assoc (find-matching-method fn-ast args) :op :fn-method)]
     (if-some [ret-tag (infer-tag env me)]
