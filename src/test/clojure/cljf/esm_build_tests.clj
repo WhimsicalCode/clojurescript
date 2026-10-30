@@ -589,3 +589,30 @@
     (binding [esm/*generated-sources* sources]
       (esm/build {:main 'test.decl2 :output-dir (str (io/file dir "out"))}))
     (is (= "2 2 [1 2] true (2 3) (2 3) 1\n" (run-node (io/file dir "out" "test" "decl2.js"))))))
+
+(deftest destructuring-js-arrays-reads-them-by-index
+  (let [dir     (temp-dir)
+        sources (into {} [(write-source! dir 'test.arrd
+                            "(ns test.arrd)
+                             (defn f []
+                               (let [[x y]   #js [3]
+                                     [p q]   [4]
+                                     [a]     (js/Array.of 5)]
+                                 [x (identical? nil y) p q a]))
+                             (defn g [] (loop [v #js [1] n 0]
+                                          (let [[a] v] (if (< n 1) (recur [9 8] (inc n)) a))))
+                             (defn h [^array x] (let [[a] x] a))
+                             (js/console.log (pr-str (f) (g) (h [5])))"
+                            (- (System/currentTimeMillis) 60000))])]
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.arrd :output-dir (str (io/file dir "out"))}))
+    (let [out (output dir 'test.arrd)]
+      (testing "#js [] literals are read by index, past their end as nil"
+        (is (re-find #"const x = \(vec__\d+\?\.\[0\] \?\? null\);" out))
+        (is (re-find #"const y = \(vec__\d+\?\.\[1\] \?\? null\);" out)))
+      (testing "other values through nth: vectors, other JavaScript calls, loop locals, ^array hints"
+        (doseq [l ["p" "a"]]
+          (is (re-find (re-pattern (str "const " l " = \\(\\(vec__\\d+\\?\\.cljs\\$core\\$IIndexed")) out) l))
+        (is (not (re-find #"\bv\?\.\[" out)))
+        (is (not (re-find #"\bx\?\.\[" out)))))
+    (is (= "[3 true 4 nil 5] 9 5\n" (run-node (io/file dir "out" "test" "arrd.js"))))))

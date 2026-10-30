@@ -1851,6 +1851,20 @@
                          (let [i (ana/unwrap-quote (second args))]
                            (or (and (= :const (:op i)) (number? (:form i)))
                                (= :local (:op i)))))
+        ;; (nth v i nil) of a constant index, as sequential destructuring
+        ;; compiles to, of a let local certain to hold a JavaScript array (see
+        ;; ana/js-array-init?, i.e. #js [1 2]): (v?.[i] ?? null), as nth
+        ;; returns within its bounds and nil past them, without nth's
+        ;; protocol dispatch. Not loop locals or params, which recur may
+        ;; assign other values, nor values only hinted ^array
+        array-nth? (and nth-lookup?
+                        (== 3 (count args))
+                        (let [i (ana/unwrap-quote (second args))
+                              d (ana/unwrap-quote (nth args 2))]
+                          (and (= :const (:op i)) (integer? (:form i)) (<= 0 (:form i))
+                               (= :const (:op d)) (nil? (:form d))))
+                        (let [{:keys [local init]} (:info (first args))]
+                          (and (= :let local) (ana/js-array-init? init))))
         ;; (seq x), (first x), (next x), (count x) of a local: the protocol method these call
         ;; when x implements the protocol, at the call site when x has it, as
         ;; get-lookup?, anything else through the fn as before
@@ -2008,6 +2022,10 @@
          (emits "(")
          (emit-lookup-test x site-method)
          (emits "?" x site-method "(null):" f "(" x "))"))
+
+       array-nth?
+       (let [[v i] args]
+         (emits "(" v "?.[" (:form (ana/unwrap-quote i)) "] ?? null)"))
 
        nth-lookup?
        (let [[v i] args
