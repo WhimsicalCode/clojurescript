@@ -3,6 +3,14 @@
 Changes since Clojurific was forked from ClojureScript. For ClojureScript's own
 releases, see its [changelog](https://github.com/clojure/clojurescript/blob/master/changes.md).
 
+## 0.12.14 [Next]
+
+### Fixed
+
+- Sequential destructuring of a `#js []` literal kept an element that is `undefined` as `nil`, as `(v?.[i] ?? null)` read it: it now reads `(v?.length > i ? v[i] : null)`, `undefined` within the array's bounds and `nil` past them, as `nth`.
+- Locals named alike once munged where only one is named as a namespace's first segment (i.e. a `file-meta` param with a `file-meta.*` namespace in the build, and a `file_meta` local shadowing it) were both renamed `file_meta__$1`, a `SyntaxError` in ES module output: a local's shadow depth now counts a namespace's first segment at every local it shadows, not only the outermost.
+- A function with nested functions whose body held a NUL outside a string constant (a `#js {}` key, `js*`, a comment) failed to compile with a `NumberFormatException`, or could get another function's declarations: the placeholders of hoisted locals' declarations start with a random marker instead of a bare NUL.
+
 ## 0.12.13 [2026-10-30]
 
 ### Added

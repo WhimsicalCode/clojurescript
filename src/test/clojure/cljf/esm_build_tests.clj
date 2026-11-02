@@ -602,17 +602,52 @@
                              (defn g [] (loop [v #js [1] n 0]
                                           (let [[a] v] (if (< n 1) (recur [9 8] (inc n)) a))))
                              (defn h [^array x] (let [[a] x] a))
-                             (js/console.log (pr-str (f) (g) (h [5])))"
+                             (defn u [] (let [[a b] #js [js/undefined]] [(identical? js/undefined a) (identical? nil b)]))
+                             (js/console.log (pr-str (f) (g) (h [5]) (u)))"
                             (- (System/currentTimeMillis) 60000))])]
     (binding [esm/*generated-sources* sources]
       (esm/build {:main 'test.arrd :output-dir (str (io/file dir "out"))}))
     (let [out (output dir 'test.arrd)]
       (testing "#js [] literals are read by index, past their end as nil"
-        (is (re-find #"const x = \(vec__\d+\?\.\[0\] \?\? null\);" out))
-        (is (re-find #"const y = \(vec__\d+\?\.\[1\] \?\? null\);" out)))
+        (is (re-find #"const x = \(vec__(\d+)\?\.length > 0 \? vec__\1\[0\] : null\);" out))
+        (is (re-find #"const y = \(vec__(\d+)\?\.length > 1 \? vec__\1\[1\] : null\);" out)))
       (testing "other values through nth: vectors, other JavaScript calls, loop locals, ^array hints"
         (doseq [l ["p" "a"]]
           (is (re-find (re-pattern (str "const " l " = \\(\\(vec__\\d+\\?\\.cljs\\$core\\$IIndexed")) out) l))
-        (is (not (re-find #"\bv\?\.\[" out)))
-        (is (not (re-find #"\bx\?\.\[" out)))))
-    (is (= "[3 true 4 nil 5] 9 5\n" (run-node (io/file dir "out" "test" "arrd.js"))))))
+        (is (not (re-find #"\bv\?\.length" out)))
+        (is (not (re-find #"\bx\?\.length" out)))))
+    (is (= "[3 true 4 nil 5] 9 5 [true true]\n" (run-node (io/file dir "out" "test" "arrd.js"))))))
+
+(deftest locals-munged-alike-one-a-namespace-s-first-segment-are-renamed-apart
+  ;; shadow-depth counts a namespace's first segment at every link: file-meta
+  ;; (a namespace's) and file_meta (shadowing it, munged alike) would both be
+  ;; file_meta__$1 otherwise
+  (let [dir     (temp-dir)
+        sources (into {} [(write-source! dir 'file-meta.core "(ns file-meta.core) (defn x [] 1)"
+                            (- (System/currentTimeMillis) 60000))
+                          (write-source! dir 'test.fmeta
+                            "(ns test.fmeta (:require [file-meta.core]))
+                             (defn f [file-meta] (let [file_meta 2] [file-meta file_meta]))
+                             (defn g [file_meta] (let [file-meta 2] [file_meta file-meta]))
+                             (defn h [file-meta] (let [r (let [file_meta 2] file_meta)] [file-meta r]))
+                             (defn k [file-meta] (let [file_meta 2 file-meta 3] [file-meta file_meta]))
+                             (js/console.log (pr-str (f 1) (g 1) (h 1) (k 1) (file-meta.core/x)))"
+                            (- (System/currentTimeMillis) 60000))])]
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.fmeta :output-dir (str (io/file dir "out"))}))
+    (is (= "[1 2] [1 2] [1 2] [3 2] 1\n" (run-node (io/file dir "out" "test" "fmeta.js"))))))
+
+(deftest fns-with-nuls-in-raw-text-fill-their-declarations
+  ;; a #js {} key, js* and comments are emitted as they are: a NUL in them
+  ;; isn't the start of a declaration placeholder (emit-fn-body)
+  (let [dir     (temp-dir)
+        sources (into {} [(write-source! dir 'test.nul
+                            "(ns test.nul)
+                             (defn f [x] (let [o #js {\"\\u0000\" 1 \"\\u00000\\u0000\" 2}]
+                                           [(aget o \"\\u0000\") (aget o \"\\u00000\\u0000\")
+                                            (vec (map (fn [y] (+ y (if (pos? y) (let [z 1] z) 0))) x))]))
+                             (js/console.log (pr-str (f [1 2])))"
+                            (- (System/currentTimeMillis) 60000))])]
+    (binding [esm/*generated-sources* sources]
+      (esm/build {:main 'test.nul :output-dir (str (io/file dir "out"))}))
+    (is (= "[1 2 [2 3]]\n" (run-node (io/file dir "out" "test" "nul.js"))))))

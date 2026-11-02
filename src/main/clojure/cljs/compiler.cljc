@@ -171,14 +171,20 @@
        nil
        (::ana/namespaces @env/*compiler*))))
 
-; Helper fn
-(defn shadow-depth [s]
+(defn shadow-depth
+  "The suffix a local is renamed with (name__$depth): 1 for each local it
+  shadows, and 1 for each of them and itself named as a namespace's first
+  segment (whose global it would shadow). Counted at every link, a local's
+  depth is always greater than its shadow's, even when the two are named
+  differently, munged alike (file-meta and file_meta, ana/shadowed-local),
+  and only one is a namespace's first segment."
+  [s]
   (let [{:keys [name info]} s]
-    (loop [d 0, {:keys [shadow]} info]
-      (cond
-        shadow (recur (inc d) shadow)
-        (find-ns-starts-with (str name)) (inc d)
-        :else d))))
+    (loop [d 0, name name, {:keys [shadow]} info]
+      (let [d (cond-> d (find-ns-starts-with (str name)) inc)]
+        (if shadow
+          (recur (inc d) (:name shadow) shadow)
+          d)))))
 
 (defn hash-scope [s]
   (hash-combine #?(:clj  (hash (:name s))
@@ -1303,25 +1309,35 @@
 #?(:clj
    (def ^:private ^:dynamic *fn-decls*
      "While an outermost fn's body is written to a buffer in ES module output,
-     an atom of the declarations of the hoisted locals of the fns in it, {n
+     {:marker m :decls a}: the start of the placeholders the fns in it write,
+     and an atom of the declarations of their hoisted locals, {n
      declaration}, see emit-fn-body."
      nil))
 
 #?(:clj
+   (defn- fn-decls-marker
+     "The start of a fn body's declaration placeholders (marker n \\u0000): a
+     NUL and a random nonce, which emitted code doesn't hold. Raw text, i.e.
+     #js {} keys, js* and comments, can hold a NUL, not the nonce after it."
+     ^String []
+     (str (char 0) "cljf" (Long/toHexString (.nextLong (java.util.concurrent.ThreadLocalRandom/current))) ":")))
+
+#?(:clj
    (defn- fill-fn-decls
-     "s with the placeholders of emit-fn-body (\\u0000n\\u0000) replaced by
+     "s with the placeholders of emit-fn-body (marker n \\u0000) replaced by
      the declarations of decls, {n declaration}."
-     ^String [^String s decls]
+     ^String [^String s ^String marker decls]
      (if (empty? decls)
        s
-       (let [sb (StringBuilder. (+ (.length s) 64))]
+       (let [sb (StringBuilder. (+ (.length s) 64))
+             ml (.length marker)]
          (loop [from 0]
-           (let [i (.indexOf s (int 0) (int from))]
+           (let [i (.indexOf s marker (int from))]
              (if (neg? i)
                (.toString (.append sb s from (.length s)))
-               (let [j (.indexOf s (int 0) (int (inc i)))]
+               (let [j (.indexOf s (int 0) (int (+ i ml)))]
                  (.append sb s from i)
-                 (.append sb ^String (or (get decls (Long/parseLong (subs s (inc i) j))) ""))
+                 (.append sb ^String (or (get decls (Long/parseLong (subs s (+ i ml) j))) ""))
                  (recur (inc j))))))))))
 
 (defn emit-fn-body
@@ -1337,21 +1353,22 @@
     (if #?(:clj *esm-emitting* :cljs false)
       #?(:clj
          (let [decl-str #(when-let [locals (seq %)] (str "let " (string/join ", " locals) ";"))]
-           (if-let [decls *fn-decls*]
+           (if-let [{:keys [marker decls]} *fn-decls*]
              (let [n (count @decls)]
                (swap! decls assoc n nil)
-               (.write ^Writer *out* (str (char 0) n (char 0)))
+               (.write ^Writer *out* (str marker n (char 0)))
                (emitln)
                (emit-fn-body* expr recurs type params)
                (swap! decls assoc n (decl-str @*hoisted-locals*)))
-             (let [body  (java.io.StringWriter.)
-                   decls (atom {})]
-               (binding [*out* body *fn-decls* decls]
+             (let [body   (java.io.StringWriter.)
+                   marker (fn-decls-marker)
+                   decls  (atom {})]
+               (binding [*out* body *fn-decls* {:marker marker :decls decls}]
                  (emitln)
                  (emit-fn-body* expr recurs type params))
                (when-let [d (decl-str @*hoisted-locals*)]
                  (.write ^Writer *out* ^String d))
-               (.write ^Writer *out* (fill-fn-decls (str body) @decls)))))
+               (.write ^Writer *out* (fill-fn-decls (str body) marker @decls)))))
          :cljs nil)
       (do
         (emitln)
@@ -1853,8 +1870,9 @@
                                (= :local (:op i)))))
         ;; (nth v i nil) of a constant index, as sequential destructuring
         ;; compiles to, of a let local certain to hold a JavaScript array (see
-        ;; ana/js-array-init?, i.e. #js [1 2]): (v?.[i] ?? null), as nth
-        ;; returns within its bounds and nil past them, without nth's
+        ;; ana/js-array-init?, i.e. #js [1 2]): (v?.length > i ? v[i] : null),
+        ;; as nth returns within its bounds (undefined elements too) and nil
+        ;; past them, without nth's
         ;; protocol dispatch. Not loop locals or params, which recur may
         ;; assign other values, nor values only hinted ^array
         array-nth? (and nth-lookup?
@@ -2024,8 +2042,9 @@
          (emits "?" x site-method "(null):" f "(" x "))"))
 
        array-nth?
-       (let [[v i] args]
-         (emits "(" v "?.[" (:form (ana/unwrap-quote i)) "] ?? null)"))
+       (let [[v i] args
+             i (:form (ana/unwrap-quote i))]
+         (emits "(" v "?.length > " i " ? " v "[" i "] : null)"))
 
        nth-lookup?
        (let [[v i] args
